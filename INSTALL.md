@@ -64,6 +64,8 @@ you will need to disable quarantine for it to run. Please see
 * [astropy](https://www.astropy.org/), for FITS file support
 * [pyemf3](https://github.com/jeremysanders/pyemf3) >= 3.3, for EMF output
 * [iminuit](https://github.com/iminuit/iminuit) >= 2, for better fitting
+* [CMake](https://cmake.org/), if using the optional MicroTeX bridge described below
+* a working C++ compiler toolchain, if building Veusz extensions or the optional MicroTeX bridge
 * [Ghostscript](https://www.ghostscript.com/), for EPS/PS output
 * [dbus-python](https://dbus.freedesktop.org/doc/dbus-python/), for D-BUS support
 * [Sphinx](https://www.sphinx-doc.org/en/master/), to rebuild the documentation
@@ -94,6 +96,87 @@ binaries download from the Qt website, or a Qt build from source. A
 quick way to install Qt binaries on different platforms can be using
 the [aqtinstall](https://github.com/miurahr/aqtinstall) command line
 installer.
+
+### Optional MicroTeX integration for development
+
+This source tree can optionally render selected text through
+MicroTeX. The MicroTeX source is bundled in this repository as a git
+submodule at `third_party/MicroTeX`.
+
+Additional requirements:
+
+* `cmake`, used to build the bundled MicroTeX static library and the
+  Veusz-side `microtexbridge` helper
+* a local C++ compiler toolchain, used to compile both the bundled
+  MicroTeX library and the bridge
+* a working Qt6 development installation for the bridge build
+
+After cloning, initialize the bundled submodule:
+
+    $ git clone <veusz-repository>
+    $ cd veusz
+    $ git submodule update --init --recursive
+
+Typical setup:
+
+    $ python3 -m venv .venv
+    $ source .venv/bin/activate
+    $ pip3 install numpy PyQt6 sip astropy h5py tomli
+    $ pip3 install -v .
+
+The normal Veusz build now also builds the bundled MicroTeX library
+and the Veusz-side bridge automatically. In other words, a standard
+`pip3 install -v .` in a source checkout is expected to produce:
+
+1. `build-microtex/libLaTeX.a`
+2. `build-microtexbridge/libmicrotexbridge.so`
+3. an installed runtime payload under `veusz/microtex` containing the
+   packaged `res` tree and `libmicrotexbridge.so`
+
+If you want to inspect or debug those steps manually, a typical manual
+build is:
+
+    $ cmake -S third_party/MicroTeX -B build-microtex -DQT=ON -DBUILD_EXAMPLE=OFF
+    $ cmake --build build-microtex -j2
+    $ cmake -S src/microtexbridge -B build-microtexbridge \
+        -DMICROTEX_SRC=$PWD/third_party/MicroTeX \
+        -DMICROTEX_LIB=$PWD/build-microtex/libLaTeX.a
+    $ cmake --build build-microtexbridge -j2
+
+At runtime, Veusz will normally:
+
+1. use the packaged `veusz/microtex/res` and `veusz/microtex/libmicrotexbridge.so`
+   in an installed build
+2. otherwise use the bundled `third_party/MicroTeX` source checkout and
+   `build-microtexbridge/libmicrotexbridge.so` in a source checkout
+3. load that bridge on first use of a `Use TeX` text setting
+
+If the build-time artifacts are missing, Veusz still keeps the runtime
+fallback which attempts to build them lazily on first use. That
+fallback should be treated as a safety net for development, not as the
+primary installation path.
+
+If you need to override the default bundled layout, the following
+environment variables can be used:
+
+* `VEUSZ_MICROTEX_RES`
+  Path to the MicroTeX `res` directory
+* `VEUSZ_MICROTEX_BRIDGE`
+  Path to a prebuilt `libmicrotexbridge.so`
+* `VEUSZ_SKIP_MICROTEX_BUILD`
+  Skip the automatic bundled MicroTeX build during `pip install` or
+  `setup.py build_ext`
+
+The `Use TeX` checkbox is available on supported text settings,
+including general labels and axis/tick label properties. GUI display,
+bitmap export and SVG export all use the same parsed MicroTeX SVG
+geometry so output remains consistent across backends.
+
+MicroTeX support should be understood as a built-in math subset, not
+as a full LaTeX engine. It is suitable for common formula syntax,
+matrices, align-style layouts, text styles and some local macro
+definitions, but not for general `\usepackage{...}` workflows or
+arbitrary external LaTeX packages.
 
 ### Installing into system Python directories
 

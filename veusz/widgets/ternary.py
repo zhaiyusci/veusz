@@ -463,15 +463,21 @@ class Ternary(NonOrthGraph):
             # draw tick labels in each direction
             hlabbot = wlableft = wlabright = 0
             for l, x, y in zip(tbotlabels, tickbotline[2], tickbotline[3]+off):
-                r = utils.Renderer(painter, font, x, y, l, 0, 1, 0, doc=self.document)
+                r = utils.Renderer(
+                    painter, font, x, y, l, 0, 1, 0,
+                    usetex=tl.useTeX, doc=self.document)
                 bounds = r.render()
                 hlabbot = max(hlabbot, bounds[3]-bounds[1])
             for l, x, y in zip(tleftlabels, tickleftline[2]-off-sp, tickleftline[3]):
-                r = utils.Renderer(painter, font, x, y, l, 1, 0, 0, doc=self.document)
+                r = utils.Renderer(
+                    painter, font, x, y, l, 1, 0, 0,
+                    usetex=tl.useTeX, doc=self.document)
                 bounds = r.render()
                 wlableft = max(wlableft, bounds[2]-bounds[0])
             for l, x, y in zip(trightlabels,tickrightline[2]+off+sp, tickrightline[3]):
-                r = utils.Renderer(painter, font, x, y, l, -1, 0, 0, doc=self.document)
+                r = utils.Renderer(
+                    painter, font, x, y, l, -1, 0, 0,
+                    usetex=tl.useTeX, doc=self.document)
                 bounds = r.render()
                 wlabright = max(wlabright, bounds[2]-bounds[0])
 
@@ -501,6 +507,7 @@ class Ternary(NonOrthGraph):
                 painter, font, 0, 0,
                 self.settings.labelbottom,
                 align, 1,
+                usetex=labelSetn.useTeX,
                 doc=self.document)
             painter.save()
             painter.translate(self._box[0]+self._width/2,
@@ -515,6 +522,7 @@ class Ternary(NonOrthGraph):
                 painter, font, 0, -sp,
                 self.settings.labelleft,
                 -align, -1,
+                usetex=labelSetn.useTeX,
                 doc=self.document)
 
             painter.save()
@@ -530,6 +538,7 @@ class Ternary(NonOrthGraph):
                 painter, font, 0, -sp,
                 self.settings.labelright,
                 -align, -1,
+                usetex=labelSetn.useTeX,
                 doc=self.document)
 
             painter.save()

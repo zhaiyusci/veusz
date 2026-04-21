@@ -184,6 +184,7 @@ class NonOrthPoint(Widget):
             utils.Renderer(
                 painter, font, x, y, t,
                 alignhorz, alignvert, angle,
+                usetex=lab.useTeX,
                 doc=self.document).render()
 
     def getColorbarParameters(self):

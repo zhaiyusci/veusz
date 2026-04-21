@@ -381,6 +381,7 @@ class Polar(NonOrthGraph):
                     painter, font, x, self._yc, num,
                     alignhorz=-1,
                     alignvert=-1, usefullheight=True,
+                    usetex=tl.useTeX,
                     doc=self.document)
                 r.render()
 
@@ -442,7 +443,9 @@ class Polar(NonOrthGraph):
                     painter, font, x, y, label,
                     alignhorz=align[0],
                     alignvert=align[1],
-                    usefullheight=True)
+                    usefullheight=True,
+                    usetex=tl.useTeX,
+                    doc=self.document)
                 r.render()
 
         # draw spokes

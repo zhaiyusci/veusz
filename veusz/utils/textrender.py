@@ -22,7 +22,11 @@
 ##############################################################################
 
 import math
+import os
 import re
+import shutil
+import xml.etree.ElementTree as ET
+from collections import OrderedDict
 
 import numpy as N
 
@@ -32,6 +36,7 @@ from . import points
 from ..helpers import qtmml
 from ..helpers import recordpaint
 from ..helpers.qtloops import RotatedRectangle
+from . import microtexbridge
 
 def _(text, disambiguation=None, context='TextRender'):
     """Translate text."""
@@ -1582,13 +1587,628 @@ class _MmlRenderer(_Renderer):
 
         return self.calcbounds
 
+_svg_path_token_re = re.compile(
+    r'[AaCcHhLlMmQqSsTtVvZz]|[-+]?(?:\d+\.\d*|\.\d+|\d+)(?:[eE][-+]?\d+)?'
+)
+_svg_transform_re = re.compile(r'([A-Za-z]+)\s*\(([^)]*)\)')
+_svg_ns_re = re.compile(r'^\{[^}]+\}')
+_MICROTEX_FONT_FAMILIES = None
+
+
+def _microtex_res_root():
+    root = os.environ.get('VEUSZ_MICROTEX_RES')
+    if root:
+        return root
+    package_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+    candidate = os.path.join(package_root, 'microtex', 'res')
+    if os.path.isdir(candidate):
+        return candidate
+    veusz_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+    candidate = os.path.join(veusz_root, 'third_party', 'MicroTeX', 'res')
+    if os.path.isdir(candidate):
+        return candidate
+    return None
+
+
+def _ensure_microtex_fonts_loaded():
+    global _MICROTEX_FONT_FAMILIES
+    if _MICROTEX_FONT_FAMILIES is not None:
+        return _MICROTEX_FONT_FAMILIES
+
+    families = {}
+    res_root = _microtex_res_root()
+    if not res_root:
+        _MICROTEX_FONT_FAMILIES = families
+        return families
+
+    fonts_root = os.path.join(res_root, 'fonts')
+    if not os.path.isdir(fonts_root):
+        _MICROTEX_FONT_FAMILIES = families
+        return families
+
+    for dirpath, _, filenames in os.walk(fonts_root):
+        for filename in filenames:
+            if not filename.lower().endswith('.ttf'):
+                continue
+            font_path = os.path.join(dirpath, filename)
+            font_id = qt.QFontDatabase.addApplicationFont(font_path)
+            if font_id < 0:
+                continue
+            loaded = qt.QFontDatabase.applicationFontFamilies(font_id)
+            if loaded:
+                families[os.path.splitext(filename)[0].lower()] = loaded[0]
+
+    _MICROTEX_FONT_FAMILIES = families
+    return families
+
+
+def _svg_strip_ns(tag):
+    return _svg_ns_re.sub('', tag)
+
+
+def _svg_parse_length(value, dpi):
+    if value is None:
+        return None
+    m = re.match(r'^\s*([-+]?(?:\d+\.\d*|\.\d+|\d+)(?:[eE][-+]?\d+)?)\s*([A-Za-z%]*)\s*$', value)
+    if not m:
+        return None
+    num = float(m.group(1))
+    unit = m.group(2) or 'px'
+    if unit == 'px':
+        return num
+    if unit == 'pt':
+        return num * dpi / 72.0
+    if unit == 'mm':
+        return num * dpi / 25.4
+    if unit == 'cm':
+        return num * dpi / 2.54
+    if unit == 'in':
+        return num * dpi
+    return num
+
+
+def _svg_parse_transform(value):
+    transform = qt.QTransform()
+    if not value:
+        return transform
+
+    for name, argstr in _svg_transform_re.findall(value):
+        nums = [float(v) for v in re.findall(
+            r'[-+]?(?:\d+\.\d*|\.\d+|\d+)(?:[eE][-+]?\d+)?', argstr)]
+        if name == 'matrix' and len(nums) == 6:
+            part = qt.QTransform(nums[0], nums[1], nums[2], nums[3], nums[4], nums[5])
+        elif name == 'translate' and nums:
+            tx = nums[0]
+            ty = nums[1] if len(nums) > 1 else 0.0
+            part = qt.QTransform.fromTranslate(tx, ty)
+        elif name == 'scale' and nums:
+            sx = nums[0]
+            sy = nums[1] if len(nums) > 1 else sx
+            part = qt.QTransform.fromScale(sx, sy)
+        elif name == 'rotate' and nums:
+            part = qt.QTransform()
+            if len(nums) == 3:
+                part.translate(nums[1], nums[2])
+                part.rotate(nums[0])
+                part.translate(-nums[1], -nums[2])
+            else:
+                part.rotate(nums[0])
+        else:
+            continue
+        transform = transform * part
+
+    return transform
+
+
+def _svg_parse_color(value, opacity):
+    if not value or value == 'none':
+        return None
+    color = qt.QColor(value)
+    if not color.isValid():
+        return None
+    if opacity is not None:
+        color.setAlphaF(max(0.0, min(1.0, color.alphaF() * opacity)))
+    return color
+
+
+def _svg_transform_scale(transform):
+    det = transform.m11() * transform.m22() - transform.m12() * transform.m21()
+    scale = math.sqrt(abs(det))
+    return scale if scale > 0 else 1.0
+
+
+def _svg_parse_path(data):
+    tokens = _svg_path_token_re.findall(data or '')
+    path = qt.QPainterPath()
+    i = 0
+    cmd = None
+    current = qt.QPointF(0.0, 0.0)
+    start = qt.QPointF(0.0, 0.0)
+    last_cubic = None
+    last_quad = None
+
+    def iscmd(tok):
+        return len(tok) == 1 and tok.isalpha()
+
+    def nextnum():
+        nonlocal i
+        val = float(tokens[i])
+        i += 1
+        return val
+
+    while i < len(tokens):
+        if iscmd(tokens[i]):
+            cmd = tokens[i]
+            i += 1
+        elif cmd is None:
+            raise ValueError('SVG path missing command')
+
+        if cmd in ('M', 'm'):
+            first = True
+            while i + 1 < len(tokens) and not iscmd(tokens[i]):
+                x = nextnum()
+                y = nextnum()
+                if cmd == 'm':
+                    x += current.x()
+                    y += current.y()
+                pt = qt.QPointF(x, y)
+                if first:
+                    path.moveTo(pt)
+                    start = pt
+                    first = False
+                else:
+                    path.lineTo(pt)
+                current = pt
+            last_cubic = last_quad = None
+            cmd = 'L' if cmd == 'M' else 'l'
+        elif cmd in ('L', 'l'):
+            while i + 1 < len(tokens) and not iscmd(tokens[i]):
+                x = nextnum()
+                y = nextnum()
+                if cmd == 'l':
+                    x += current.x()
+                    y += current.y()
+                current = qt.QPointF(x, y)
+                path.lineTo(current)
+            last_cubic = last_quad = None
+        elif cmd in ('H', 'h'):
+            while i < len(tokens) and not iscmd(tokens[i]):
+                x = nextnum()
+                if cmd == 'h':
+                    x += current.x()
+                current = qt.QPointF(x, current.y())
+                path.lineTo(current)
+            last_cubic = last_quad = None
+        elif cmd in ('V', 'v'):
+            while i < len(tokens) and not iscmd(tokens[i]):
+                y = nextnum()
+                if cmd == 'v':
+                    y += current.y()
+                current = qt.QPointF(current.x(), y)
+                path.lineTo(current)
+            last_cubic = last_quad = None
+        elif cmd in ('C', 'c'):
+            while i + 5 < len(tokens) and not iscmd(tokens[i]):
+                x1 = nextnum()
+                y1 = nextnum()
+                x2 = nextnum()
+                y2 = nextnum()
+                x = nextnum()
+                y = nextnum()
+                if cmd == 'c':
+                    x1 += current.x()
+                    y1 += current.y()
+                    x2 += current.x()
+                    y2 += current.y()
+                    x += current.x()
+                    y += current.y()
+                c1 = qt.QPointF(x1, y1)
+                c2 = qt.QPointF(x2, y2)
+                end = qt.QPointF(x, y)
+                path.cubicTo(c1, c2, end)
+                current = end
+                last_cubic = c2
+                last_quad = None
+        elif cmd in ('S', 's'):
+            while i + 3 < len(tokens) and not iscmd(tokens[i]):
+                if last_cubic is None:
+                    c1 = qt.QPointF(current)
+                else:
+                    c1 = qt.QPointF(2 * current.x() - last_cubic.x(), 2 * current.y() - last_cubic.y())
+                x2 = nextnum()
+                y2 = nextnum()
+                x = nextnum()
+                y = nextnum()
+                if cmd == 's':
+                    x2 += current.x()
+                    y2 += current.y()
+                    x += current.x()
+                    y += current.y()
+                c2 = qt.QPointF(x2, y2)
+                end = qt.QPointF(x, y)
+                path.cubicTo(c1, c2, end)
+                current = end
+                last_cubic = c2
+                last_quad = None
+        elif cmd in ('Q', 'q'):
+            while i + 3 < len(tokens) and not iscmd(tokens[i]):
+                x1 = nextnum()
+                y1 = nextnum()
+                x = nextnum()
+                y = nextnum()
+                if cmd == 'q':
+                    x1 += current.x()
+                    y1 += current.y()
+                    x += current.x()
+                    y += current.y()
+                c1 = qt.QPointF(x1, y1)
+                end = qt.QPointF(x, y)
+                path.quadTo(c1, end)
+                current = end
+                last_quad = c1
+                last_cubic = None
+        elif cmd in ('T', 't'):
+            while i + 1 < len(tokens) and not iscmd(tokens[i]):
+                if last_quad is None:
+                    c1 = qt.QPointF(current)
+                else:
+                    c1 = qt.QPointF(2 * current.x() - last_quad.x(), 2 * current.y() - last_quad.y())
+                x = nextnum()
+                y = nextnum()
+                if cmd == 't':
+                    x += current.x()
+                    y += current.y()
+                end = qt.QPointF(x, y)
+                path.quadTo(c1, end)
+                current = end
+                last_quad = c1
+                last_cubic = None
+        elif cmd in ('Z', 'z'):
+            path.closeSubpath()
+            current = qt.QPointF(start)
+            last_cubic = last_quad = None
+        else:
+            raise ValueError(f'Unsupported SVG path command: {cmd}')
+
+    return path
+
+
+def _svg_build_pen(style, transform):
+    opacity = float(style.get('opacity', '1'))
+    stroke_opacity = float(style.get('stroke-opacity', '1')) * opacity
+    color = _svg_parse_color(style.get('stroke'), stroke_opacity)
+    if color is None:
+        return qt.QPen(qt.Qt.PenStyle.NoPen)
+
+    pen = qt.QPen(color)
+    pen.setWidthF(float(style.get('stroke-width', '1')) * _svg_transform_scale(transform))
+    pen.setCapStyle({
+        'round': qt.Qt.PenCapStyle.RoundCap,
+        'square': qt.Qt.PenCapStyle.SquareCap,
+        'butt': qt.Qt.PenCapStyle.FlatCap,
+    }.get(style.get('stroke-linecap', 'square'), qt.Qt.PenCapStyle.SquareCap))
+    pen.setJoinStyle({
+        'round': qt.Qt.PenJoinStyle.RoundJoin,
+        'miter': qt.Qt.PenJoinStyle.MiterJoin,
+        'bevel': qt.Qt.PenJoinStyle.BevelJoin,
+    }.get(style.get('stroke-linejoin', 'bevel'), qt.Qt.PenJoinStyle.BevelJoin))
+    return pen
+
+
+def _svg_build_brush(style):
+    opacity = float(style.get('opacity', '1'))
+    fill_opacity = float(style.get('fill-opacity', '1')) * opacity
+    color = _svg_parse_color(style.get('fill'), fill_opacity)
+    if color is None or color.alpha() == 0:
+        return qt.QBrush(qt.Qt.BrushStyle.NoBrush)
+    return qt.QBrush(color)
+
+
+def _svg_parse_text_size(value):
+    if not value:
+        return 1.0
+    m = re.match(
+        r'^\s*([-+]?(?:\d+\.\d*|\.\d+|\d+)(?:[eE][-+]?\d+)?)\s*([A-Za-z%]*)\s*$',
+        value,
+    )
+    if not m:
+        return 1.0
+    num = float(m.group(1))
+    unit = m.group(2) or 'px'
+    if unit == 'px':
+        return num
+    if unit == 'pt':
+        return num * 96.0 / 72.0
+    if unit == 'mm':
+        return num * 96.0 / 25.4
+    if unit == 'cm':
+        return num * 96.0 / 2.54
+    if unit == 'in':
+        return num * 96.0
+    return num
+
+
+def _svg_parse_text_path(elem, style, dpi):
+    text = ''.join(elem.itertext())
+    if not text:
+        return qt.QPainterPath()
+
+    font = qt.QFont()
+    family = style.get('font-family')
+    if family:
+        aliases = _ensure_microtex_fonts_loaded()
+        font.setFamily(aliases.get(family.lower(), family))
+    size = style.get('font-size')
+    fontsize = max(_svg_parse_text_size(size), 1e-6)
+    base_px = 1000
+    font.setPixelSize(base_px)
+    if style.get('font-weight') in ('bold', '600', '700', '800', '900'):
+        font.setBold(True)
+    if style.get('font-style') in ('italic', 'oblique'):
+        font.setItalic(True)
+    font.setStyleStrategy(
+        qt.QFont.StyleStrategy.PreferOutline |
+        qt.QFont.StyleStrategy.ForceOutline
+    )
+    if hasattr(font, 'setHintingPreference'):
+        font.setHintingPreference(qt.QFont.HintingPreference.PreferNoHinting)
+
+    x = float(elem.attrib.get('x', '0'))
+    y = float(elem.attrib.get('y', '0'))
+    path = qt.QPainterPath()
+    path.addText(qt.QPointF(0.0, 0.0), font, text)
+    scale = fontsize / float(base_px)
+    path = qt.QTransform.fromScale(scale, scale).map(path)
+    return qt.QTransform.fromTranslate(x, y).map(path)
+
+
+def _svg_parse_points(value):
+    nums = [
+        float(v) for v in re.findall(
+            r'[-+]?(?:\d+\.\d*|\.\d+|\d+)(?:[eE][-+]?\d+)?',
+            value or '',
+        )
+    ]
+    return [
+        qt.QPointF(nums[i], nums[i + 1])
+        for i in range(0, len(nums) - 1, 2)
+    ]
+
+
+def _svg_parse_ops(svgbytes, dpi):
+    root = ET.fromstring(svgbytes)
+    viewbox = root.attrib.get('viewBox', '0 0 1 1').replace(',', ' ').split()
+    if len(viewbox) == 4:
+        vbx, vby, vbw, vbh = [float(v) for v in viewbox]
+    else:
+        vbx, vby = 0.0, 0.0
+        vbw, vbh = 1.0, 1.0
+
+    width_px = _svg_parse_length(root.attrib.get('width'), dpi)
+    height_px = _svg_parse_length(root.attrib.get('height'), dpi)
+    scalex = width_px / vbw if width_px and vbw else 1.0
+    scaley = height_px / vbh if height_px and vbh else 1.0
+    root_transform = qt.QTransform()
+    root_transform.translate(-vbx, -vby)
+    root_transform.scale(scalex, scaley)
+
+    ops = []
+
+    def walk(elem, inherited_style, inherited_transform):
+        tag = _svg_strip_ns(elem.tag)
+        style = dict(inherited_style)
+
+        style_attr = elem.attrib.get('style')
+        if style_attr:
+            for item in style_attr.split(';'):
+                if ':' in item:
+                    key, val = item.split(':', 1)
+                    style[key.strip()] = val.strip()
+
+        for key in (
+            'fill', 'fill-opacity', 'fill-rule',
+            'stroke', 'stroke-opacity', 'stroke-width',
+            'stroke-linecap', 'stroke-linejoin', 'opacity',
+            'font-family', 'font-size', 'font-weight', 'font-style'
+        ):
+            if key in elem.attrib:
+                style[key] = elem.attrib[key]
+
+        transform = _svg_parse_transform(elem.attrib.get('transform')) * inherited_transform
+
+        if tag == 'path':
+            path = _svg_parse_path(elem.attrib.get('d', ''))
+            path.setFillRule(
+                qt.Qt.FillRule.WindingFill
+                if style.get('fill-rule') == 'nonzero' else
+                qt.Qt.FillRule.OddEvenFill
+            )
+            path = transform.map(path)
+            pen = _svg_build_pen(style, transform)
+            brush = _svg_build_brush(style)
+            if pen.style() != qt.Qt.PenStyle.NoPen or brush.style() != qt.Qt.BrushStyle.NoBrush:
+                ops.append((path, pen, brush))
+        elif tag == 'rect':
+            path = qt.QPainterPath()
+            path.addRect(
+                float(elem.attrib.get('x', '0')),
+                float(elem.attrib.get('y', '0')),
+                float(elem.attrib.get('width', '0')),
+                float(elem.attrib.get('height', '0')),
+            )
+            path = transform.map(path)
+            pen = _svg_build_pen(style, transform)
+            brush = _svg_build_brush(style)
+            if pen.style() != qt.Qt.PenStyle.NoPen or brush.style() != qt.Qt.BrushStyle.NoBrush:
+                ops.append((path, pen, brush))
+        elif tag == 'polyline':
+            points = _svg_parse_points(elem.attrib.get('points', ''))
+            if points:
+                path = qt.QPainterPath()
+                path.moveTo(points[0])
+                for point in points[1:]:
+                    path.lineTo(point)
+                path = transform.map(path)
+                pen = _svg_build_pen(style, transform)
+                brush = _svg_build_brush(style)
+                if pen.style() != qt.Qt.PenStyle.NoPen or brush.style() != qt.Qt.BrushStyle.NoBrush:
+                    ops.append((path, pen, brush))
+        elif tag == 'polygon':
+            points = _svg_parse_points(elem.attrib.get('points', ''))
+            if points:
+                path = qt.QPainterPath()
+                path.moveTo(points[0])
+                for point in points[1:]:
+                    path.lineTo(point)
+                path.closeSubpath()
+                path.setFillRule(
+                    qt.Qt.FillRule.WindingFill
+                    if style.get('fill-rule') == 'nonzero' else
+                    qt.Qt.FillRule.OddEvenFill
+                )
+                path = transform.map(path)
+                pen = _svg_build_pen(style, transform)
+                brush = _svg_build_brush(style)
+                if pen.style() != qt.Qt.PenStyle.NoPen or brush.style() != qt.Qt.BrushStyle.NoBrush:
+                    ops.append((path, pen, brush))
+        elif tag == 'line':
+            path = qt.QPainterPath()
+            path.moveTo(
+                float(elem.attrib.get('x1', '0')),
+                float(elem.attrib.get('y1', '0')),
+            )
+            path.lineTo(
+                float(elem.attrib.get('x2', '0')),
+                float(elem.attrib.get('y2', '0')),
+            )
+            path = transform.map(path)
+            pen = _svg_build_pen(style, transform)
+            brush = _svg_build_brush(style)
+            if pen.style() != qt.Qt.PenStyle.NoPen or brush.style() != qt.Qt.BrushStyle.NoBrush:
+                ops.append((path, pen, brush))
+        elif tag == 'text':
+            path = _svg_parse_text_path(elem, style, dpi)
+            path = transform.map(path)
+            pen = _svg_build_pen(style, transform)
+            brush = _svg_build_brush(style)
+            if pen.style() != qt.Qt.PenStyle.NoPen or brush.style() != qt.Qt.BrushStyle.NoBrush:
+                ops.append((path, pen, brush))
+
+        for child in elem:
+            walk(child, style, transform)
+
+    walk(
+        root,
+        {
+            'fill': 'black',
+            'fill-opacity': '1',
+            'fill-rule': 'evenodd',
+            'stroke': 'none',
+            'stroke-opacity': '1',
+            'stroke-width': '1',
+            'stroke-linecap': 'square',
+            'stroke-linejoin': 'bevel',
+            'opacity': '1',
+        },
+        root_transform,
+    )
+
+    bounds = qt.QRectF()
+    for path, pen, brush in ops:
+        bounds = bounds.united(path.boundingRect())
+
+    if not bounds.isValid() or bounds.isEmpty():
+        return ops, width_px or (vbw * scalex), height_px or (vbh * scaley)
+
+    normalized_ops = []
+    shift = qt.QTransform.fromTranslate(-bounds.x(), -bounds.y())
+    for path, pen, brush in ops:
+        normalized_ops.append((shift.map(path), pen, brush))
+
+    return normalized_ops, bounds.width(), bounds.height()
+
+
+_TEX_OPS_CACHE = OrderedDict()
+_TEX_OPS_CACHE_LIMIT = 128
+
+
+def _tex_ops_cache_get(key):
+    value = _TEX_OPS_CACHE.get(key)
+    if value is None:
+        return None
+    _TEX_OPS_CACHE.move_to_end(key)
+    return value
+
+
+def _tex_ops_cache_put(key, value):
+    _TEX_OPS_CACHE[key] = value
+    _TEX_OPS_CACHE.move_to_end(key)
+    while len(_TEX_OPS_CACHE) > _TEX_OPS_CACHE_LIMIT:
+        _TEX_OPS_CACHE.popitem(last=False)
+
+class _TeXRenderer(_Renderer):
+    """MicroTeX-backed renderer."""
+
+    def _initText(self, text):
+        """Render the TeX source into an SVG payload."""
+
+        self.error = ''
+        self.svgbytes = None
+        self.size = qt.QSizeF(1, 1)
+        self.ops = []
+        try:
+            self.svgbytes = microtexbridge.render_svg(text, text_size=self.font.pointSizeF() or 20.0)
+            cache_key = (self.svgbytes, float(self.painter.dpi))
+            cached = _tex_ops_cache_get(cache_key)
+            if cached is None:
+                cached = _svg_parse_ops(self.svgbytes, self.painter.dpi)
+                _tex_ops_cache_put(cache_key, cached)
+            self.ops, width, height = cached
+            self.size = qt.QSizeF(width, height)
+        except Exception as e:
+            self.error = _('Error rendering TeX: %s\n') % str(e)
+            self.svgbytes = None
+            self.ops = []
+
+    def _getWidthHeight(self):
+        return self.size.width(), self.size.height(), 0
+
+    def render(self):
+        """Render the SVG text."""
+
+        if self.calcbounds is None:
+            self.getBounds()
+
+        p = self.painter
+        p.save()
+        if self.ops:
+            p.translate(self.xi, self.yi)
+            p.rotate(self.angle)
+            # Keep the same geometry model as the standard text renderer:
+            # self.xi/self.yi is the bottom-left anchor of the unrotated
+            # text box, and alignment has already been resolved in getBounds().
+            p.translate(0.0, -self.size.height())
+            for path, pen, brush in self.ops:
+                p.setPen(pen)
+                p.setBrush(brush)
+                p.drawPath(path)
+        else:
+            p.setFont(qt.QFont())
+            p.setPen(qt.QPen(qt.QColor("red")))
+            p.drawText(
+                qt.QRectF(self.xi, self.yi, 300, 200),
+                qt.Qt.AlignmentFlag.AlignLeft | qt.Qt.AlignmentFlag.AlignTop | qt.Qt.TextFlag.TextWordWrap,
+                self.error )
+        p.restore()
+        return self.calcbounds
+
 # identify mathml text
 mml_re = re.compile(r'^\s*<math.*</math\s*>\s*$', re.DOTALL)
 
 def Renderer(painter, font, x, y, text,
              alignhorz = -1, alignvert = -1, angle = 0,
              usefullheight = False,
-             doc = None):
+             doc = None, usetex = False):
 
     """Return an appropriate Renderer object depending on the text.
     This looks like a class name, because it was a class originally.
@@ -1606,7 +2226,9 @@ def Renderer(painter, font, x, y, text,
     alignment is in the painter frame, not the text frame
     """
 
-    if mml_re.match(text):
+    if usetex:
+        r = _TeXRenderer
+    elif mml_re.match(text):
         r = _MmlRenderer
     else:
         r = _StdRenderer

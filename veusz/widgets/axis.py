@@ -1007,6 +1007,7 @@ class Axis(widget.Widget):
             r = utils.Renderer(
                 painter, font, x, y, text, alignhorz=ax,
                 alignvert=ay, angle=angle,
+                usetex=tl.useTeX,
                 doc=self.document)
 
             if outerbounds is not None:
@@ -1120,6 +1121,7 @@ class Axis(widget.Widget):
             painter, font, x, y, text,
             ax, ay, angle,
             usefullheight=True,
+            usetex=sl.useTeX,
             doc=self.document)
 
         # make sure text is in plot rectangle

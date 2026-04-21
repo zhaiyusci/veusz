@@ -53,7 +53,7 @@ def finitePoly(poly):
     return out
 
 class ContourLineLabeller(LineLabeller):
-    def __init__(self, clip, rot, painter, font, doc):
+    def __init__(self, clip, rot, painter, font, doc, usetex=False):
         LineLabeller.__init__(self, clip, rot)
         self.clippath = qt.QPainterPath()
         self.clippath.addRect(clip)
@@ -61,6 +61,7 @@ class ContourLineLabeller(LineLabeller):
         self.painter = painter
         self.font = font
         self.document = doc
+        self.usetex = usetex
 
     def drawAt(self, idx, rect):
         """Called to draw the label with the index given."""
@@ -77,6 +78,7 @@ class ContourLineLabeller(LineLabeller):
             rect.cx, rect.cy, text,
             alignhorz=0, alignvert=0,
             angle=angle,
+            usetex=self.usetex,
             doc=self.document)
 
         rend.render()
@@ -536,7 +538,7 @@ class Contour(plotters.GenericPlotter):
 
         # linelabeller does clipping and labelling of contours
         linelabeller = ContourLineLabeller(
-            clip, cl.rotate, painter, font, self.document)
+            clip, cl.rotate, painter, font, self.document, cl.useTeX)
         levels = []
 
         # iterate over each level, and list of lines
@@ -549,7 +551,9 @@ class Contour(plotters.GenericPlotter):
                     locale=self.document.locale)
                 rend = utils.Renderer(
                     painter, font, 0, 0, text, alignhorz=0,
-                    alignvert=0, angle=0, doc=self.document)
+                    alignvert=0, angle=0,
+                    usetex=cl.useTeX,
+                    doc=self.document)
                 textdims = qt.QSizeF(*rend.getDimensions())
                 textdims += qt.QSizeF(descent*2, descent*2)
             else:

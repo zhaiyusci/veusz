@@ -377,6 +377,10 @@ class Text(Settings):
             descr=_('Underline font'),
             usertext=_('Underline') ) )
         self.add( setting.Bool(
+            'useTeX', False,
+            descr=_('Render text using MicroTeX'),
+            usertext=_('Use TeX') ) )
+        self.add( setting.Bool(
             'hide', False,
             descr=_('Hide the text'),
             usertext=_('Hide')) )

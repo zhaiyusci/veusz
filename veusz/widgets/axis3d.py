@@ -109,7 +109,9 @@ class _AxisLabels(threed.AxisLabels):
         renderer = utils.Renderer(
             painter, font, 0, 0, label,
             alignhorz=0, alignvert=valign,
-            usefullheight=True)
+            usefullheight=True,
+            usetex=self.ticklabelsprop.useTeX,
+            doc=self.document)
 
         # get text bounds
         rect = renderer.getTightBounds()
@@ -150,7 +152,9 @@ class _AxisLabels(threed.AxisLabels):
         renderer = utils.Renderer(
             painter, font, 0, deltay, self.axislabel,
             alignhorz=halign, alignvert=valign,
-            usefullheight=True)
+            usefullheight=True,
+            usetex=self.axislabelprop.useTeX,
+            doc=self.document)
         renderer.render()
 
 class MajorTick(setting.Line3D):

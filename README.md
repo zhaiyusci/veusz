@@ -51,6 +51,7 @@ Changes in 4.2:
   * Plot labels
   * Shapes and arrows on plots
   * LaTeX-like formatting for text
+  * Optional MicroTeX-backed rendering for TeX text in labels
   * Multiple axes
   * Axes with steps in axis scale (broken axes)
   * Axis scales using functional forms
@@ -85,6 +86,44 @@ Changes in 4.2:
 
 ## Installation
 Please see the file `INSTALL.md` included in the distribution for installation details, or go to the [download page](https://veusz.github.io/download/).
+
+## Development note: MicroTeX integration
+This tree can optionally render selected text objects through
+[MicroTeX](https://github.com/NanoMichael/MicroTeX). This integration is
+shipped in this repository as a git submodule under
+`third_party/MicroTeX`.
+
+When enabled in the GUI using the `Use TeX` option on supported text
+settings, Veusz will:
+
+* use the bundled `third_party/MicroTeX` checkout by default
+* build `build-microtex/libLaTeX.a` automatically during the normal Veusz build
+* build `build-microtexbridge/libmicrotexbridge.so` automatically during the normal Veusz build
+* package the MicroTeX resource tree and bridge into installed wheels under `veusz/microtex`
+* render the TeX source through MicroTeX
+* convert the generated SVG primitives into Veusz drawing paths for GUI and export output
+
+After cloning, the submodule must be initialized:
+
+    $ git clone <veusz-repository>
+    $ cd veusz
+    $ git submodule update --init --recursive
+
+The normal bundled MicroTeX build also requires a local C++ compiler
+toolchain together with CMake and a working Qt6 development
+installation.
+
+MicroTeX support is a built-in math subset, not a full LaTeX engine.
+It supports common mathematical notation, matrices, align-style
+layouts, text styles and some local macro definitions, but not general
+`\usepackage{...}` workflows or arbitrary external LaTeX packages.
+
+If you intentionally want to skip the bundled MicroTeX build during
+installation, set `VEUSZ_SKIP_MICROTEX_BUILD=1` before running the
+build command.
+
+Please see `INSTALL.md` for the development setup requirements, build
+steps and optional environment variables used by this integration.
 
 ## License
 Veusz is Copyright (C) 2003-2025 Jeremy Sanders
