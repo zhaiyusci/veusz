@@ -138,10 +138,10 @@ The normal Veusz build now also builds the bundled MicroTeX library
 and the Veusz-side bridge automatically. In other words, a standard
 `pip3 install -v .` in a source checkout is expected to produce:
 
-1. `build-microtex/libLaTeX.a`
-2. `build-microtexbridge/libmicrotexbridge.so`
+1. `build-microtex/<platform MicroTeX static library>`
+2. `build-microtexbridge/<platform microtexbridge library>`
 3. an installed runtime payload under `veusz/microtex` containing the
-   packaged `res` tree and `libmicrotexbridge.so`
+   packaged `res` tree and the bridge library
 
 If you want to inspect or debug those steps manually, a typical manual
 build is:
@@ -150,15 +150,15 @@ build is:
     $ cmake --build build-microtex -j2
     $ cmake -S src/microtexbridge -B build-microtexbridge \
         -DMICROTEX_SRC=$PWD/third_party/MicroTeX \
-        -DMICROTEX_LIB=$PWD/build-microtex/libLaTeX.a
+        -DMICROTEX_LIB=$PWD/build-microtex/<platform MicroTeX static library>
     $ cmake --build build-microtexbridge -j2
 
 At runtime, Veusz will normally:
 
-1. use the packaged `veusz/microtex/res` and `veusz/microtex/libmicrotexbridge.so`
+1. use the packaged `veusz/microtex/res` and packaged bridge library
    in an installed build
 2. otherwise use the bundled `third_party/MicroTeX` source checkout and
-   `build-microtexbridge/libmicrotexbridge.so` in a source checkout
+   the built bridge library in a source checkout
 3. load that bridge on first use of a `Use TeX` text setting when the
    engine is `MicroTeX`
 4. call the system TeX toolchain directly when the engine is one of the
@@ -175,7 +175,7 @@ environment variables can be used:
 * `VEUSZ_MICROTEX_RES`
   Path to the MicroTeX `res` directory
 * `VEUSZ_MICROTEX_BRIDGE`
-  Path to a prebuilt `libmicrotexbridge.so`
+  Path to a prebuilt MicroTeX bridge library
 * `VEUSZ_SKIP_MICROTEX_BUILD`
   Skip the automatic bundled MicroTeX build during `pip install` or
   `setup.py build_ext`

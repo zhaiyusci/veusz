@@ -105,8 +105,8 @@ When the TeX option is enabled in the GUI, Veusz will:
 
 * use the bundled `third_party/MicroTeX` checkout by default
 * or use the system TeX toolchain when the selected engine is one of the system choices
-* build `build-microtex/libLaTeX.a` automatically during the normal Veusz build
-* build `build-microtexbridge/libmicrotexbridge.so` automatically during the normal Veusz build
+* build `build-microtex/<platform MicroTeX static library>` automatically during the normal Veusz build
+* build `build-microtexbridge/<platform microtexbridge library>` automatically during the normal Veusz build
 * package the MicroTeX resource tree and bridge into installed wheels under `veusz/microtex`
 * render the TeX source through the selected TeX engine
 * convert the generated SVG primitives into Veusz drawing paths for GUI and export output

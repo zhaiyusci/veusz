@@ -4,19 +4,62 @@ from collections import OrderedDict
 import re
 import subprocess
 import threading
+import sys
 from pathlib import Path
 
 
-def _candidate_paths():
-    env = os.environ.get("VEUSZ_MICROTEX_BRIDGE")
-    if env:
-        yield Path(env)
-    here = Path(__file__).resolve()
-    yield _package_root() / "microtex" / "libmicrotexbridge.so"
-    build_root = os.environ.get("VEUSZ_BUILD_ROOT")
-    if build_root:
-        yield Path(build_root).expanduser().resolve() / "build-microtexbridge" / "libmicrotexbridge.so"
-    yield here.parents[2] / "build-microtexbridge" / "libmicrotexbridge.so"
+def _bridge_filenames():
+    if os.name == "nt":
+        return ("microtexbridge.dll", "libmicrotexbridge.dll")
+    if sys.platform == "darwin":
+        return ("libmicrotexbridge.dylib", "microtexbridge.dylib")
+    return ("libmicrotexbridge.so", "microtexbridge.so")
+
+
+def _microtex_library_filenames():
+    if os.name == "nt":
+        return ("LaTeX.lib", "libLaTeX.a")
+    if sys.platform == "darwin":
+        return ("libLaTeX.a", "LaTeX.lib")
+    return ("libLaTeX.a", "LaTeX.lib")
+
+
+def _find_first_existing(root, filenames):
+    if not root.exists():
+        return None
+    search_roots = [root]
+    if os.name == "nt":
+        search_roots = [
+            root / "Release",
+            root / "RelWithDebInfo",
+            root,
+            root / "Debug",
+        ]
+    for search_root in search_roots:
+        if not search_root.exists():
+            continue
+        for filename in filenames:
+            for candidate in sorted(search_root.rglob(filename)):
+                if candidate.is_file():
+                    return candidate
+    return None
+
+
+def _cmake_build_cmd(build_dir):
+    cmd = ["cmake", "--build", str(build_dir), "-j2"]
+    if os.name == "nt":
+        cmd += ["--config", "Release"]
+    return cmd
+
+
+def _packaged_bridge_candidates():
+    packaged_root = _package_root() / "microtex"
+    for filename in _bridge_filenames():
+        yield packaged_root / filename
+
+
+def _build_bridge_candidate():
+    return _find_first_existing(_bridge_build_dir(), _bridge_filenames())
 
 
 def _package_root():
@@ -104,7 +147,7 @@ def _build_microtex():
 
     subprocess.run(cmake_configure, check=True, cwd=_veusz_root())
     subprocess.run(
-        ["cmake", "--build", str(build_dir), "-j2"],
+        _cmake_build_cmd(build_dir),
         check=True,
         cwd=_veusz_root(),
     )
@@ -115,15 +158,16 @@ def _build_bridge():
     src_dir = _veusz_root() / "src" / "microtexbridge"
     microtex_src = _microtex_src_root()
     microtex_build = _microtex_build_root()
-    microtex_lib = microtex_build / "libLaTeX.a"
+    microtex_lib = _find_first_existing(microtex_build, _microtex_library_filenames())
     cache = microtex_build / "CMakeCache.txt"
 
     if not microtex_src.exists():
         raise RuntimeError(f"MicroTeX source not found: {microtex_src}")
-    if not microtex_lib.exists():
+    if microtex_lib is None:
         _build_microtex()
-    if not microtex_lib.exists():
-        raise RuntimeError(f"MicroTeX static library not found: {microtex_lib}")
+        microtex_lib = _find_first_existing(microtex_build, _microtex_library_filenames())
+    if not microtex_lib:
+        raise RuntimeError(f"MicroTeX static library not found in {microtex_build}")
 
     cmake_configure = [
         "cmake",
@@ -138,7 +182,7 @@ def _build_bridge():
 
     subprocess.run(cmake_configure, check=True, cwd=_veusz_root())
     subprocess.run(
-        ["cmake", "--build", str(build_dir), "-j2"],
+        _cmake_build_cmd(build_dir),
         check=True,
         cwd=_veusz_root(),
     )
@@ -146,6 +190,7 @@ def _build_bridge():
 
 _LIB = None
 _LOCK = threading.RLock()
+_DLL_DIRS = []
 _SVG_CACHE = OrderedDict()
 _SVG_CACHE_LIMIT = 128
 
@@ -169,28 +214,49 @@ def _load():
     global _LIB
     if _LIB is not None:
         return _LIB
-    paths = list(_candidate_paths())
-    for path in paths:
-        if not path.exists() and path == _bridge_build_dir() / "libmicrotexbridge.so":
-            _build_bridge()
+
+    env = os.environ.get("VEUSZ_MICROTEX_BRIDGE")
+    if env:
+        env_path = Path(env)
+        if env_path.exists():
+            return _load_library(env_path)
+
+    for path in _packaged_bridge_candidates():
         if path.exists():
-            lib = ctypes.CDLL(str(path))
-            lib.microtex_render_svg.argtypes = [
-                ctypes.c_char_p,
-                ctypes.c_float,
-                ctypes.c_int,
-                ctypes.c_char_p,
-                ctypes.c_char_p,
-                ctypes.POINTER(ctypes.c_void_p),
-                ctypes.POINTER(ctypes.c_size_t),
-                ctypes.POINTER(ctypes.c_void_p),
-            ]
-            lib.microtex_render_svg.restype = ctypes.c_int
-            lib.microtex_free.argtypes = [ctypes.c_void_p]
-            lib.microtex_free.restype = None
-            _LIB = lib
-            return lib
+            return _load_library(path)
+
+    path = _build_bridge_candidate()
+    if path is None:
+        _build_bridge()
+        path = _build_bridge_candidate()
+    if path and path.exists():
+        return _load_library(path)
     return None
+
+
+def _load_library(path):
+    global _LIB
+    if os.name == "nt" and hasattr(os, "add_dll_directory"):
+        try:
+            _DLL_DIRS.append(os.add_dll_directory(str(path.parent)))
+        except OSError:
+            pass
+    lib = ctypes.CDLL(str(path))
+    lib.microtex_render_svg.argtypes = [
+        ctypes.c_char_p,
+        ctypes.c_float,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_char_p,
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(ctypes.c_size_t),
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    lib.microtex_render_svg.restype = ctypes.c_int
+    lib.microtex_free.argtypes = [ctypes.c_void_p]
+    lib.microtex_free.restype = None
+    _LIB = lib
+    return lib
 
 
 def _resource_root():
