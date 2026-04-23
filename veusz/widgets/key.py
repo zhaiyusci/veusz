@@ -408,6 +408,7 @@ class Key(widget.Widget):
                 painter, titlefont,
                 0, 0, s.title,
                 usetex=s.Text.useTeX,
+                textpen=textpen,
                 doc=self.document).getDimensions()
             titleheight += 0.5*margin
 
@@ -446,6 +447,7 @@ class Key(widget.Widget):
                         painter, font, 0, 0,
                         c.getKeyText(i),
                         usetex=s.Text.useTeX,
+                        textpen=textpen,
                         doc=self.document).getDimensions()
                     maxwidth = max(maxwidth, w)
                     lines = max(1, math.ceil(h/height))
@@ -513,7 +515,10 @@ class Key(widget.Widget):
             xpos = x + (totalwidth-titlewidth)/2
             utils.Renderer(
                 painter, titlefont, xpos, y, s.title,
-                alignvert=1, usetex=s.Text.useTeX, doc=self.document).render()
+                alignvert=1,
+                usetex=s.Text.useTeX,
+                textpen=textpen,
+                doc=self.document).render()
             y += titleheight
 
         # centres key below title
@@ -558,6 +563,7 @@ class Key(widget.Widget):
                     plotter.getKeyText(num),
                     alignx, 1,
                     usetex=s.Text.useTeX,
+                    textpen=textpen,
                     doc=self.document).render()
 
         phelper.setControlGraph(

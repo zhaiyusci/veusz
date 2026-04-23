@@ -104,6 +104,7 @@ class _AxisLabels(threed.AxisLabels):
 
         font = self.ticklabelsprop.makeQFont(painter)
         painter.setFont(font)
+        pen = self.ticklabelsprop.makeQPen(painter)
 
         label = self.ticklabels[index]
         renderer = utils.Renderer(
@@ -111,6 +112,7 @@ class _AxisLabels(threed.AxisLabels):
             alignhorz=0, alignvert=valign,
             usefullheight=True,
             usetex=self.ticklabelsprop.useTeX,
+            textpen=pen,
             doc=self.document)
 
         # get text bounds
@@ -120,7 +122,6 @@ class _AxisLabels(threed.AxisLabels):
 
         # draw text if it doesn't overlap with existing text
         if not painter.textrects.willOverlap(rect):
-            pen = self.ticklabelsprop.makeQPen(painter)
             painter.setPen(pen)
             renderer.render()
             painter.textrects.addRect(rect)
@@ -154,6 +155,7 @@ class _AxisLabels(threed.AxisLabels):
             alignhorz=halign, alignvert=valign,
             usefullheight=True,
             usetex=self.axislabelprop.useTeX,
+            textpen=pen,
             doc=self.document)
         renderer.render()
 

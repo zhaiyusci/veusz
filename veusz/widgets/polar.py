@@ -368,7 +368,8 @@ class Polar(NonOrthGraph):
         scale, fmt = tl.scale, tl.format
         if fmt == 'Auto':
             fmt = atick.autoformat
-        painter.setPen( tl.makeQPen(painter) )
+        textpen = tl.makeQPen(painter)
+        painter.setPen(textpen)
         font = tl.makeQFont(painter)
 
         # draw ticks
@@ -382,6 +383,7 @@ class Polar(NonOrthGraph):
                     alignhorz=-1,
                     alignvert=-1, usefullheight=True,
                     usetex=tl.useTeX,
+                    textpen=textpen,
                     doc=self.document)
                 r.render()
 
@@ -445,6 +447,7 @@ class Polar(NonOrthGraph):
                     alignvert=align[1],
                     usefullheight=True,
                     usetex=tl.useTeX,
+                    textpen=textpen,
                     doc=self.document)
                 r.render()
 

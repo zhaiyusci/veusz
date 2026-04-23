@@ -169,6 +169,7 @@ class TextLabel(plotters.FreePlotter):
                     TextLabel.cnvtalignvert[s.alignVert],
                     s.angle,
                     usetex=s.Text.useTeX,
+                    textpen=textpen,
                     doc=d
                 )
 

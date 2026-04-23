@@ -824,6 +824,7 @@ class PointPlotter(GenericPlotter):
                 painter, font, x, y, t,
                 alignhorz, alignvert, angle,
                 usetex=lab.useTeX,
+                textpen=textpen,
                 doc=self.document).render()
 
     def getAxisLabels(self, direction):

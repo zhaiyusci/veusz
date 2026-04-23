@@ -378,8 +378,12 @@ class Text(Settings):
             usertext=_('Underline') ) )
         self.add( setting.Bool(
             'useTeX', False,
-            descr=_('Render text using MicroTeX'),
+            descr=_('Render text using TeX'),
             usertext=_('Use TeX') ) )
+        self.add( setting.SettingBackwardCompat(
+            'texBackend',
+            '/TeX/backend',
+            'microtex' ) )
         self.add( setting.Bool(
             'hide', False,
             descr=_('Hide the text'),
@@ -415,6 +419,32 @@ class Text(Settings):
         """ Return a qt.QPen object for the font pen """
         color = self.get('color').color(painter)
         return qt.QPen(color)
+
+class TeX(Settings):
+    """Document-level TeX rendering settings."""
+
+    def __init__(self, name, **args):
+        Settings.__init__(self, name, setnsmode='widgetsettings', **args)
+
+        self.add( setting.Choice(
+            'backend',
+            ['microtex', 'system'],
+            'microtex',
+            hidden=True,
+            descr=_('Legacy TeX backend selection'),
+            usertext=_('Backend') ),
+            readonly=True )
+        self.add( setting.ChoiceOrMore(
+            'engine',
+            ['microtex', 'latex', 'pdflatex', 'xelatex', 'lualatex'],
+            'microtex',
+            descr=_('TeX engine used by all text objects'),
+            usertext=_('Engine') ) )
+        self.add( setting.Notes(
+            'preamble',
+            '% Add TeX packages or macro definitions here',
+            descr=_('Additional LaTeX preamble for System TeX'),
+            usertext=_('Preamble') ) )
 
 class PointLabel(Text):
     """For labelling points on plots."""

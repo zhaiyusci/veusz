@@ -452,7 +452,8 @@ class Ternary(NonOrthGraph):
             trightlabels = self._getLabels(tickright*mv, '%Vg')
             tbotlabels = self._getLabels(tickbot*mv, '%Vg')
 
-            painter.setPen( tickLabelSetn.makeQPen(painter) )
+            textpen = tickLabelSetn.makeQPen(painter)
+            painter.setPen(textpen)
             font = tickLabelSetn.makeQFont(painter)
             painter.setFont(font)
 
@@ -465,19 +466,25 @@ class Ternary(NonOrthGraph):
             for l, x, y in zip(tbotlabels, tickbotline[2], tickbotline[3]+off):
                 r = utils.Renderer(
                     painter, font, x, y, l, 0, 1, 0,
-                    usetex=tl.useTeX, doc=self.document)
+                    usetex=tl.useTeX,
+                    textpen=textpen,
+                    doc=self.document)
                 bounds = r.render()
                 hlabbot = max(hlabbot, bounds[3]-bounds[1])
             for l, x, y in zip(tleftlabels, tickleftline[2]-off-sp, tickleftline[3]):
                 r = utils.Renderer(
                     painter, font, x, y, l, 1, 0, 0,
-                    usetex=tl.useTeX, doc=self.document)
+                    usetex=tl.useTeX,
+                    textpen=textpen,
+                    doc=self.document)
                 bounds = r.render()
                 wlableft = max(wlableft, bounds[2]-bounds[0])
             for l, x, y in zip(trightlabels,tickrightline[2]+off+sp, tickrightline[3]):
                 r = utils.Renderer(
                     painter, font, x, y, l, -1, 0, 0,
-                    usetex=tl.useTeX, doc=self.document)
+                    usetex=tl.useTeX,
+                    textpen=textpen,
+                    doc=self.document)
                 bounds = r.render()
                 wlabright = max(wlabright, bounds[2]-bounds[0])
 
@@ -487,7 +494,8 @@ class Ternary(NonOrthGraph):
 
         if labelSetn is not None and not labelSetn.hide:
             # draw label on edges (if requested)
-            painter.setPen( labelSetn.makeQPen(painter) )
+            textpen = labelSetn.makeQPen(painter)
+            painter.setPen(textpen)
             font = labelSetn.makeQFont(painter)
             painter.setFont(font)
 
@@ -508,6 +516,7 @@ class Ternary(NonOrthGraph):
                 self.settings.labelbottom,
                 align, 1,
                 usetex=labelSetn.useTeX,
+                textpen=textpen,
                 doc=self.document)
             painter.save()
             painter.translate(self._box[0]+self._width/2,
@@ -523,6 +532,7 @@ class Ternary(NonOrthGraph):
                 self.settings.labelleft,
                 -align, -1,
                 usetex=labelSetn.useTeX,
+                textpen=textpen,
                 doc=self.document)
 
             painter.save()
@@ -539,6 +549,7 @@ class Ternary(NonOrthGraph):
                 self.settings.labelright,
                 -align, -1,
                 usetex=labelSetn.useTeX,
+                textpen=textpen,
                 doc=self.document)
 
             painter.save()

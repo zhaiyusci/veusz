@@ -25,8 +25,10 @@ import math
 import os
 import re
 import shutil
+import threading
 import xml.etree.ElementTree as ET
 from collections import OrderedDict
+from weakref import ref as weakref_ref
 
 import numpy as N
 
@@ -1254,7 +1256,11 @@ class _Renderer:
             self, painter, font, x, y, text,
             alignhorz = -1, alignvert = -1, angle = 0,
             usefullheight = False,
-            doc = None):
+            doc = None,
+            textpen = None,
+            texbackend = None,
+            texengine = None,
+            texpreamble = None):
 
         self.painter = painter
         self.font = font
@@ -1263,6 +1269,10 @@ class _Renderer:
         self.angle = angle
         self.usefullheight = usefullheight
         self.doc = doc
+        self.textpen = qt.QPen(textpen) if textpen is not None else None
+        self.texbackend = texbackend
+        self.texengine = texengine
+        self.texpreamble = texpreamble
 
         # x and y are the original coordinates
         # xi and yi are adjusted for alignment
@@ -1592,6 +1602,7 @@ _svg_path_token_re = re.compile(
 )
 _svg_transform_re = re.compile(r'([A-Za-z]+)\s*\(([^)]*)\)')
 _svg_ns_re = re.compile(r'^\{[^}]+\}')
+_svg_xlink_href = '{http://www.w3.org/1999/xlink}href'
 _MICROTEX_FONT_FAMILIES = None
 
 
@@ -1705,7 +1716,38 @@ def _svg_parse_color(value, opacity):
         return None
     color = qt.QColor(value)
     if not color.isValid():
-        return None
+        m = re.match(
+            r'^(rgba?)\(\s*([^)]+)\s*\)$',
+            value.strip(),
+            re.IGNORECASE,
+        )
+        if not m:
+            return None
+
+        components = [part.strip() for part in m.group(2).split(',')]
+        if len(components) not in (3, 4):
+            return None
+
+        def parse_channel(text):
+            if text.endswith('%'):
+                return max(0, min(255, round(float(text[:-1]) * 2.55)))
+            return max(0, min(255, round(float(text))))
+
+        try:
+            red = parse_channel(components[0])
+            green = parse_channel(components[1])
+            blue = parse_channel(components[2])
+            alpha = 255
+            if len(components) == 4:
+                alpha_text = components[3]
+                if alpha_text.endswith('%'):
+                    alpha = max(0, min(255, round(float(alpha_text[:-1]) * 2.55)))
+                else:
+                    alpha_val = float(alpha_text)
+                    alpha = max(0, min(255, round(alpha_val * 255 if alpha_val <= 1 else alpha_val)))
+            color = qt.QColor(red, green, blue, alpha)
+        except ValueError:
+            return None
     if opacity is not None:
         color.setAlphaF(max(0.0, min(1.0, color.alphaF() * opacity)))
     return color
@@ -1975,8 +2017,37 @@ def _svg_parse_points(value):
     ]
 
 
+def _tex_recolor_ops(ops, color):
+    """Return a recolored copy of SVG drawing ops."""
+    if color is None or not color.isValid():
+        return ops
+
+    recolored = []
+    for path, pen, brush in ops:
+        newpen = qt.QPen(pen)
+        if newpen.style() != qt.Qt.PenStyle.NoPen:
+            newpen.setColor(color)
+
+        newbrush = qt.QBrush(brush)
+        if newbrush.style() != qt.Qt.BrushStyle.NoBrush:
+            newbrush.setColor(color)
+
+        recolored.append((path, newpen, newbrush))
+    return recolored
+
+
 def _svg_parse_ops(svgbytes, dpi):
     root = ET.fromstring(svgbytes)
+    defs = {}
+
+    def collect_defs(elem):
+        elem_id = elem.attrib.get('id')
+        if elem_id:
+            defs[elem_id] = elem
+        for child in elem:
+            collect_defs(child)
+
+    collect_defs(root)
     viewbox = root.attrib.get('viewBox', '0 0 1 1').replace(',', ' ').split()
     if len(viewbox) == 4:
         vbx, vby, vbw, vbh = [float(v) for v in viewbox]
@@ -1994,7 +2065,7 @@ def _svg_parse_ops(svgbytes, dpi):
 
     ops = []
 
-    def walk(elem, inherited_style, inherited_transform):
+    def walk(elem, inherited_style, inherited_transform, in_defs=False, use_stack=()):
         tag = _svg_strip_ns(elem.tag)
         style = dict(inherited_style)
 
@@ -2016,6 +2087,29 @@ def _svg_parse_ops(svgbytes, dpi):
 
         transform = _svg_parse_transform(elem.attrib.get('transform')) * inherited_transform
 
+        if tag == 'defs':
+            for child in elem:
+                walk(child, style, transform, in_defs=True, use_stack=use_stack)
+            return
+
+        if tag == 'use':
+            href = elem.attrib.get(_svg_xlink_href) or elem.attrib.get('href')
+            if href and href.startswith('#'):
+                target_id = href[1:]
+                target = defs.get(target_id)
+                if target is not None and target_id not in use_stack:
+                    x = float(elem.attrib.get('x', '0'))
+                    y = float(elem.attrib.get('y', '0'))
+                    use_transform = qt.QTransform.fromTranslate(x, y)
+                    walk(
+                        target, style,
+                        use_transform * transform,
+                        in_defs=False,
+                        use_stack=use_stack + (target_id,))
+            for child in elem:
+                walk(child, style, transform, in_defs=in_defs, use_stack=use_stack)
+            return
+
         if tag == 'path':
             path = _svg_parse_path(elem.attrib.get('d', ''))
             path.setFillRule(
@@ -2026,7 +2120,9 @@ def _svg_parse_ops(svgbytes, dpi):
             path = transform.map(path)
             pen = _svg_build_pen(style, transform)
             brush = _svg_build_brush(style)
-            if pen.style() != qt.Qt.PenStyle.NoPen or brush.style() != qt.Qt.BrushStyle.NoBrush:
+            if (not in_defs and
+                    (pen.style() != qt.Qt.PenStyle.NoPen or
+                     brush.style() != qt.Qt.BrushStyle.NoBrush)):
                 ops.append((path, pen, brush))
         elif tag == 'rect':
             path = qt.QPainterPath()
@@ -2039,7 +2135,9 @@ def _svg_parse_ops(svgbytes, dpi):
             path = transform.map(path)
             pen = _svg_build_pen(style, transform)
             brush = _svg_build_brush(style)
-            if pen.style() != qt.Qt.PenStyle.NoPen or brush.style() != qt.Qt.BrushStyle.NoBrush:
+            if (not in_defs and
+                    (pen.style() != qt.Qt.PenStyle.NoPen or
+                     brush.style() != qt.Qt.BrushStyle.NoBrush)):
                 ops.append((path, pen, brush))
         elif tag == 'polyline':
             points = _svg_parse_points(elem.attrib.get('points', ''))
@@ -2051,7 +2149,9 @@ def _svg_parse_ops(svgbytes, dpi):
                 path = transform.map(path)
                 pen = _svg_build_pen(style, transform)
                 brush = _svg_build_brush(style)
-                if pen.style() != qt.Qt.PenStyle.NoPen or brush.style() != qt.Qt.BrushStyle.NoBrush:
+                if (not in_defs and
+                        (pen.style() != qt.Qt.PenStyle.NoPen or
+                         brush.style() != qt.Qt.BrushStyle.NoBrush)):
                     ops.append((path, pen, brush))
         elif tag == 'polygon':
             points = _svg_parse_points(elem.attrib.get('points', ''))
@@ -2069,7 +2169,9 @@ def _svg_parse_ops(svgbytes, dpi):
                 path = transform.map(path)
                 pen = _svg_build_pen(style, transform)
                 brush = _svg_build_brush(style)
-                if pen.style() != qt.Qt.PenStyle.NoPen or brush.style() != qt.Qt.BrushStyle.NoBrush:
+                if (not in_defs and
+                        (pen.style() != qt.Qt.PenStyle.NoPen or
+                         brush.style() != qt.Qt.BrushStyle.NoBrush)):
                     ops.append((path, pen, brush))
         elif tag == 'line':
             path = qt.QPainterPath()
@@ -2084,18 +2186,22 @@ def _svg_parse_ops(svgbytes, dpi):
             path = transform.map(path)
             pen = _svg_build_pen(style, transform)
             brush = _svg_build_brush(style)
-            if pen.style() != qt.Qt.PenStyle.NoPen or brush.style() != qt.Qt.BrushStyle.NoBrush:
+            if (not in_defs and
+                    (pen.style() != qt.Qt.PenStyle.NoPen or
+                     brush.style() != qt.Qt.BrushStyle.NoBrush)):
                 ops.append((path, pen, brush))
         elif tag == 'text':
             path = _svg_parse_text_path(elem, style, dpi)
             path = transform.map(path)
             pen = _svg_build_pen(style, transform)
             brush = _svg_build_brush(style)
-            if pen.style() != qt.Qt.PenStyle.NoPen or brush.style() != qt.Qt.BrushStyle.NoBrush:
+            if (not in_defs and
+                    (pen.style() != qt.Qt.PenStyle.NoPen or
+                     brush.style() != qt.Qt.BrushStyle.NoBrush)):
                 ops.append((path, pen, brush))
 
         for child in elem:
-            walk(child, style, transform)
+            walk(child, style, transform, in_defs=in_defs, use_stack=use_stack)
 
     walk(
         root,
@@ -2130,6 +2236,23 @@ def _svg_parse_ops(svgbytes, dpi):
 
 _TEX_OPS_CACHE = OrderedDict()
 _TEX_OPS_CACHE_LIMIT = 128
+_TEX_SVG_CACHE = OrderedDict()
+_TEX_SVG_CACHE_LIMIT = 128
+_TEX_PREVIEW_CACHE = OrderedDict()
+_TEX_PREVIEW_CACHE_LIMIT = 128
+_TEX_ERROR_CACHE = OrderedDict()
+_TEX_ERROR_CACHE_LIMIT = 128
+_TEX_CACHE_LOCK = threading.RLock()
+_TEX_RENDER_MANAGER = None
+
+
+def _doc_tex_settings(doc):
+    if doc is None:
+        return None
+    try:
+        return doc.basewidget.settings.TeX
+    except AttributeError:
+        return None
 
 
 def _tex_ops_cache_get(key):
@@ -2146,8 +2269,196 @@ def _tex_ops_cache_put(key, value):
     while len(_TEX_OPS_CACHE) > _TEX_OPS_CACHE_LIMIT:
         _TEX_OPS_CACHE.popitem(last=False)
 
+
+def _tex_exact_cache_get(key):
+    with _TEX_CACHE_LOCK:
+        value = _TEX_SVG_CACHE.get(key)
+        if value is None:
+            return None
+        _TEX_SVG_CACHE.move_to_end(key)
+        return value
+
+
+def _tex_exact_cache_put(key, value):
+    with _TEX_CACHE_LOCK:
+        _TEX_SVG_CACHE[key] = value
+        _TEX_SVG_CACHE.move_to_end(key)
+        while len(_TEX_SVG_CACHE) > _TEX_SVG_CACHE_LIMIT:
+            _TEX_SVG_CACHE.popitem(last=False)
+
+
+def _tex_preview_cache_get(key):
+    with _TEX_CACHE_LOCK:
+        value = _TEX_PREVIEW_CACHE.get(key)
+        if value is None:
+            return None
+        _TEX_PREVIEW_CACHE.move_to_end(key)
+        return value
+
+
+def _tex_preview_cache_put(key, value):
+    with _TEX_CACHE_LOCK:
+        _TEX_PREVIEW_CACHE[key] = value
+        _TEX_PREVIEW_CACHE.move_to_end(key)
+        while len(_TEX_PREVIEW_CACHE) > _TEX_PREVIEW_CACHE_LIMIT:
+            _TEX_PREVIEW_CACHE.popitem(last=False)
+
+
+def _tex_error_cache_get(key):
+    with _TEX_CACHE_LOCK:
+        value = _TEX_ERROR_CACHE.get(key)
+        if value is None:
+            return None
+        _TEX_ERROR_CACHE.move_to_end(key)
+        return value
+
+
+def _tex_error_cache_put(key, value):
+    with _TEX_CACHE_LOCK:
+        _TEX_ERROR_CACHE[key] = value
+        _TEX_ERROR_CACHE.move_to_end(key)
+        while len(_TEX_ERROR_CACHE) > _TEX_ERROR_CACHE_LIMIT:
+            _TEX_ERROR_CACHE.popitem(last=False)
+
+
+def _render_tex_backend(engine, text, text_size, foreground, background, preamble):
+    if engine == 'microtex':
+        return microtexbridge.render_svg(
+            text,
+            text_size=text_size,
+            foreground=foreground,
+            background=background,
+        )
+
+    from . import systemtexbridge
+    return systemtexbridge.render_svg(
+        text,
+        text_size=text_size,
+        foreground=foreground,
+        background=background,
+        engine=engine,
+        preamble=preamble,
+    )
+
+
+class _TexRenderRunnable(qt.QRunnable):
+    """Background render request for interactive TeX rendering."""
+
+    def __init__(
+            self, manager, docref, exact_key, preview_key,
+            engine, text, text_size, foreground, background, preamble):
+        qt.QRunnable.__init__(self)
+        self.manager = manager
+        self.docref = docref
+        self.exact_key = exact_key
+        self.preview_key = preview_key
+        self.engine = engine
+        self.text = text
+        self.text_size = text_size
+        self.foreground = foreground
+        self.background = background
+        self.preamble = preamble
+
+    def run(self):
+        svgbytes = None
+        error = None
+        try:
+            svgbytes = _render_tex_backend(
+                self.engine,
+                self.text,
+                self.text_size,
+                self.foreground,
+                self.background,
+                self.preamble,
+            )
+        except Exception as e:
+            error = str(e)
+
+        self.manager._finish_render(
+            self.docref, self.exact_key, self.preview_key, svgbytes, error)
+
+
+class _TexRenderManager(qt.QObject):
+    """Manage background TeX rendering jobs."""
+
+    sigCacheUpdated = qt.pyqtSignal()
+
+    def __init__(self):
+        qt.QObject.__init__(self)
+        self.lock = threading.RLock()
+        self.pending = set()
+        self.pool = qt.QThreadPool(self)
+        self.pool.setMaxThreadCount(1)
+
+    def request(self, doc, exact_key, preview_key,
+                engine, text, text_size, foreground, background, preamble):
+        """Queue a render job if the exact SVG is not cached already."""
+
+        with self.lock:
+            if (_tex_exact_cache_get(exact_key) is not None or
+                    _tex_error_cache_get(exact_key) is not None or
+                    exact_key in self.pending):
+                return False
+            self.pending.add(exact_key)
+
+        self.pool.start(_TexRenderRunnable(
+            self,
+            weakref_ref(doc) if doc is not None else None,
+            exact_key,
+            preview_key,
+            engine,
+            text,
+            text_size,
+            foreground,
+            background,
+            preamble,
+        ))
+        return True
+
+    def _finish_render(self, docref, exact_key, preview_key, svgbytes, error):
+        with self.lock:
+            self.pending.discard(exact_key)
+            if svgbytes is not None:
+                _tex_exact_cache_put(exact_key, svgbytes)
+                _tex_preview_cache_put(preview_key, svgbytes)
+                with _TEX_CACHE_LOCK:
+                    _TEX_ERROR_CACHE.pop(exact_key, None)
+            elif error is not None:
+                _tex_error_cache_put(exact_key, error)
+
+        # queued connection wakes the GUI thread
+        try:
+            self.sigCacheUpdated.emit()
+        except RuntimeError:
+            # The application may already be shutting down.
+            pass
+
+
+def texRenderManager():
+    """Return the singleton async TeX render manager."""
+
+    global _TEX_RENDER_MANAGER
+    if _TEX_RENDER_MANAGER is None:
+        _TEX_RENDER_MANAGER = _TexRenderManager()
+    return _TEX_RENDER_MANAGER
+
+
+def _tex_svg_cache_get(key):
+    value = _TEX_SVG_CACHE.get(key)
+    if value is None:
+        return None
+    _TEX_SVG_CACHE.move_to_end(key)
+    return value
+
+
+def _tex_svg_cache_put(key, value):
+    _TEX_SVG_CACHE[key] = value
+    _TEX_SVG_CACHE.move_to_end(key)
+    while len(_TEX_SVG_CACHE) > _TEX_SVG_CACHE_LIMIT:
+        _TEX_SVG_CACHE.popitem(last=False)
+
 class _TeXRenderer(_Renderer):
-    """MicroTeX-backed renderer."""
+    """TeX-backed renderer."""
 
     def _initText(self, text):
         """Render the TeX source into an SVG payload."""
@@ -2156,21 +2467,134 @@ class _TeXRenderer(_Renderer):
         self.svgbytes = None
         self.size = qt.QSizeF(1, 1)
         self.ops = []
+        self.fallbackrenderer = None
         try:
-            self.svgbytes = microtexbridge.render_svg(text, text_size=self.font.pointSizeF() or 20.0)
-            cache_key = (self.svgbytes, float(self.painter.dpi))
-            cached = _tex_ops_cache_get(cache_key)
-            if cached is None:
-                cached = _svg_parse_ops(self.svgbytes, self.painter.dpi)
-                _tex_ops_cache_put(cache_key, cached)
-            self.ops, width, height = cached
-            self.size = qt.QSizeF(width, height)
+            texsettings = _doc_tex_settings(self.doc)
+
+            engine = self.texengine
+            if engine is None and texsettings is not None:
+                engine = texsettings.engine
+            if engine is None:
+                engine = 'microtex'
+
+            legacy_backend = None
+            if texsettings is not None and hasattr(texsettings, 'backend'):
+                legacy_backend = texsettings.backend
+            if engine == 'microtex' and legacy_backend == 'system':
+                engine = 'latex'
+
+            preamble = self.texpreamble
+            if preamble is None and texsettings is not None:
+                preamble = texsettings.preamble
+            if preamble is None:
+                preamble = ''
+
+            foreground = (
+                self.textpen.color().name()
+                if self.textpen is not None
+                else self.painter.pen().color().name()
+            )
+
+            text_size = float(self.font.pointSizeF() or 20.0)
+            exact_key = (
+                engine,
+                preamble,
+                text,
+                text_size,
+                foreground,
+                self.font.family(),
+                self.font.bold(),
+                self.font.italic(),
+            )
+            preview_key = (
+                text,
+                text_size,
+                foreground,
+                self.font.family(),
+                self.font.bold(),
+                self.font.italic(),
+            )
+            interactive = bool(
+                getattr(getattr(self.painter, 'helper', None),
+                        'interactive', False)
+            )
+
+            self.svgbytes = _tex_exact_cache_get(exact_key)
+            if self.svgbytes is not None:
+                cache_key = (self.svgbytes, float(self.painter.dpi))
+                cached = _tex_ops_cache_get(cache_key)
+                if cached is None:
+                    cached = _svg_parse_ops(self.svgbytes, self.painter.dpi)
+                    _tex_ops_cache_put(cache_key, cached)
+                self.ops, width, height = cached
+                if self.textpen is not None:
+                    self.ops = _tex_recolor_ops(self.ops, self.textpen.color())
+                self.size = qt.QSizeF(width, height)
+                _tex_preview_cache_put(preview_key, self.svgbytes)
+                return
+
+            if not interactive:
+                self.svgbytes = _render_tex_backend(
+                    engine, text, text_size, foreground, 'transparent', preamble)
+                _tex_exact_cache_put(exact_key, self.svgbytes)
+                _tex_preview_cache_put(preview_key, self.svgbytes)
+
+                cache_key = (self.svgbytes, float(self.painter.dpi))
+                cached = _tex_ops_cache_get(cache_key)
+                if cached is None:
+                    cached = _svg_parse_ops(self.svgbytes, self.painter.dpi)
+                    _tex_ops_cache_put(cache_key, cached)
+                self.ops, width, height = cached
+                if self.textpen is not None:
+                    self.ops = _tex_recolor_ops(self.ops, self.textpen.color())
+                self.size = qt.QSizeF(width, height)
+                return
+
+            error = _tex_error_cache_get(exact_key)
+            if error is not None:
+                self.error = _('Error rendering TeX: %s\n') % error
+                return
+
+            preview_bytes = _tex_preview_cache_get(preview_key)
+            if preview_bytes is not None:
+                self.svgbytes = preview_bytes
+                cache_key = (self.svgbytes, float(self.painter.dpi))
+                cached = _tex_ops_cache_get(cache_key)
+                if cached is None:
+                    cached = _svg_parse_ops(self.svgbytes, self.painter.dpi)
+                    _tex_ops_cache_put(cache_key, cached)
+                self.ops, width, height = cached
+                if self.textpen is not None:
+                    self.ops = _tex_recolor_ops(self.ops, self.textpen.color())
+                self.size = qt.QSizeF(width, height)
+            else:
+                self.fallbackrenderer = _StdRenderer(
+                    self.painter, self.font, self.x, self.y, text,
+                    alignhorz=self.alignhorz, alignvert=self.alignvert,
+                    angle=self.angle, usefullheight=self.usefullheight,
+                    doc=self.doc, textpen=self.textpen,
+                    texbackend=self.texbackend, texengine=self.texengine,
+                    texpreamble=self.texpreamble)
+
+            texRenderManager().request(
+                self.doc,
+                exact_key,
+                preview_key,
+                engine,
+                text,
+                text_size,
+                foreground,
+                'transparent',
+                preamble,
+            )
         except Exception as e:
             self.error = _('Error rendering TeX: %s\n') % str(e)
             self.svgbytes = None
             self.ops = []
 
     def _getWidthHeight(self):
+        if self.fallbackrenderer is not None and self.svgbytes is None:
+            return self.fallbackrenderer._getWidthHeight()
         return self.size.width(), self.size.height(), 0
 
     def render(self):
@@ -2178,6 +2602,9 @@ class _TeXRenderer(_Renderer):
 
         if self.calcbounds is None:
             self.getBounds()
+
+        if self.fallbackrenderer is not None and self.svgbytes is None:
+            return self.fallbackrenderer.render()
 
         p = self.painter
         p.save()
@@ -2208,7 +2635,9 @@ mml_re = re.compile(r'^\s*<math.*</math\s*>\s*$', re.DOTALL)
 def Renderer(painter, font, x, y, text,
              alignhorz = -1, alignvert = -1, angle = 0,
              usefullheight = False,
-             doc = None, usetex = False):
+             doc = None, usetex = False,
+             textpen = None, texbackend = None,
+             texengine = None, texpreamble = None):
 
     """Return an appropriate Renderer object depending on the text.
     This looks like a class name, because it was a class originally.
@@ -2237,5 +2666,6 @@ def Renderer(painter, font, x, y, text,
         painter, font, x, y, text,
         alignhorz=alignhorz, alignvert=alignvert,
         angle=angle, usefullheight=usefullheight,
-        doc=doc
+        doc=doc, textpen=textpen, texbackend=texbackend,
+        texengine=texengine, texpreamble=texpreamble
     )
