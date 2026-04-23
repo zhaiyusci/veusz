@@ -10,6 +10,51 @@ import tempfile
 _SYSTEM_TEX_CACHE_AVAILABLE = None
 
 
+def _external_command_env(base_env=None):
+    """Return an environment suitable for external TeX commands.
+
+    When Veusz runs from an AppImage, the runtime injects its own library
+    directory into LD_LIBRARY_PATH and related variables.  That is fine for
+    Veusz itself, but it can break host tools such as sh, xelatex, pdftocairo,
+    or dvisvgm when they fork helper programs.  Strip those AppImage-specific
+    entries while leaving the rest of the user's environment intact.
+    """
+
+    env = (os.environ if base_env is None else base_env).copy()
+
+    appdir = env.get('APPDIR')
+    if appdir:
+        appdir = os.path.abspath(appdir)
+
+        ld_library_path = env.get('LD_LIBRARY_PATH')
+        if ld_library_path:
+            cleaned = []
+            for entry in ld_library_path.split(os.pathsep):
+                entry = entry.strip()
+                if not entry:
+                    continue
+                if os.path.abspath(entry).startswith(appdir + os.sep):
+                    continue
+                cleaned.append(entry)
+            if cleaned:
+                env['LD_LIBRARY_PATH'] = os.pathsep.join(cleaned)
+            else:
+                env.pop('LD_LIBRARY_PATH', None)
+
+        for name in (
+                'APPDIR', 'APPIMAGE', 'APPIMAGE_EXTRACT_AND_RUN',
+                'APPIMAGE_ORIGINAL_DIR', 'APPIMAGE_STARTUP_DIR',
+                'APPIMAGE_UUID'):
+            env.pop(name, None)
+
+        for name in ('QT_PLUGIN_PATH', 'QT_QPA_PLATFORM_PLUGIN_PATH'):
+            value = env.get(name)
+            if value and appdir in value:
+                env.pop(name, None)
+
+    return env
+
+
 def _command(name):
     path = Path(name)
     if (path.is_absolute() or path.parent != Path('.')) and path.exists():
@@ -37,7 +82,7 @@ def _run(cmd, cwd, env=None):
         raise RuntimeError(output or f"Command failed: {' '.join(cmd)}")
 
 
-def _ensure_system_tex_cache():
+def _ensure_system_tex_cache(env=None):
     """Create the TeX Live default cache paths if possible.
 
     Returns True if at least one writable default cache path exists.
@@ -52,6 +97,8 @@ def _ensure_system_tex_cache():
         _SYSTEM_TEX_CACHE_AVAILABLE = False
         return False
 
+    env = _external_command_env(env)
+
     writable_cache = False
     for var in ('TEXMFVAR', 'TEXMFCACHE', 'TEXMFHOME', 'TEXMFCONFIG'):
         proc = subprocess.run(
@@ -59,6 +106,7 @@ def _ensure_system_tex_cache():
             check=False,
             text=True,
             capture_output=True,
+            env=env,
         )
         if proc.returncode != 0:
             continue
@@ -82,11 +130,11 @@ def _ensure_system_tex_cache():
     return writable_cache
 
 
-def _fallback_tex_env():
+def _fallback_tex_env(base_env=None):
     """Return a writable TeX environment rooted in the system temp dir."""
 
     root = Path(tempfile.gettempdir()) / 'veusz-systemtex-cache'
-    env = os.environ.copy()
+    env = _external_command_env(base_env)
     for name, subdir in (
             ('TEXMFVAR', 'texmf-var'),
             ('TEXMFCACHE', 'texmf-var'),
@@ -208,9 +256,9 @@ def render_svg(
     engine = (engine or 'latex').strip()
     tex_engine = _command(engine)
     kind = _engine_kind(engine)
-    texenv = None
-    if not _ensure_system_tex_cache():
-        texenv = _fallback_tex_env()
+    texenv = _external_command_env()
+    if not _ensure_system_tex_cache(texenv):
+        texenv = _fallback_tex_env(texenv)
 
     with tempfile.TemporaryDirectory(prefix='veusz-systemtex-') as tmp:
         tmpdir = Path(tmp)

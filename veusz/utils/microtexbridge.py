@@ -13,6 +13,9 @@ def _candidate_paths():
         yield Path(env)
     here = Path(__file__).resolve()
     yield _package_root() / "microtex" / "libmicrotexbridge.so"
+    build_root = os.environ.get("VEUSZ_BUILD_ROOT")
+    if build_root:
+        yield Path(build_root).expanduser().resolve() / "build-microtexbridge" / "libmicrotexbridge.so"
     yield here.parents[2] / "build-microtexbridge" / "libmicrotexbridge.so"
 
 
@@ -27,8 +30,15 @@ def _veusz_root():
     return Path(__file__).resolve().parents[2]
 
 
+def _build_root():
+    env = os.environ.get("VEUSZ_BUILD_ROOT")
+    if env:
+        return Path(env).expanduser().resolve()
+    return _veusz_root()
+
+
 def _bridge_build_dir():
-    return _veusz_root() / "build-microtexbridge"
+    return _build_root() / "build-microtexbridge"
 
 
 def _microtex_src_root():
@@ -36,7 +46,7 @@ def _microtex_src_root():
 
 
 def _microtex_build_root():
-    return _veusz_root() / "build-microtex"
+    return _build_root() / "build-microtex"
 
 
 def _read_cache_value(cache_path, name):
