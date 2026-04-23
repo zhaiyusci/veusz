@@ -387,6 +387,7 @@ class Key(widget.Widget):
         s = self.settings
         font = s.get('Text').makeQFont(painter)
         textpen = s.get('Text').makeQPen(painter)
+        textcolorauto = s.Text.textColorIsAuto()
 
         painter.setFont(font)
         height = utils.FontMetrics(font, painter.device()).height()
@@ -409,6 +410,7 @@ class Key(widget.Widget):
                 0, 0, s.title,
                 usetex=s.Text.useTeX,
                 textpen=textpen,
+                texpreservecolors=textcolorauto,
                 doc=self.document).getDimensions()
             titleheight += 0.5*margin
 
@@ -448,6 +450,7 @@ class Key(widget.Widget):
                         c.getKeyText(i),
                         usetex=s.Text.useTeX,
                         textpen=textpen,
+                        texpreservecolors=textcolorauto,
                         doc=self.document).getDimensions()
                     maxwidth = max(maxwidth, w)
                     lines = max(1, math.ceil(h/height))
@@ -518,6 +521,7 @@ class Key(widget.Widget):
                 alignvert=1,
                 usetex=s.Text.useTeX,
                 textpen=textpen,
+                texpreservecolors=textcolorauto,
                 doc=self.document).render()
             y += titleheight
 
@@ -564,6 +568,7 @@ class Key(widget.Widget):
                     alignx, 1,
                     usetex=s.Text.useTeX,
                     textpen=textpen,
+                    texpreservecolors=textcolorauto,
                     doc=self.document).render()
 
         phelper.setControlGraph(

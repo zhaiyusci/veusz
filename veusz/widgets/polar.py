@@ -369,6 +369,7 @@ class Polar(NonOrthGraph):
         if fmt == 'Auto':
             fmt = atick.autoformat
         textpen = tl.makeQPen(painter)
+        textcolorauto = tl.textColorIsAuto()
         painter.setPen(textpen)
         font = tl.makeQFont(painter)
 
@@ -384,6 +385,7 @@ class Polar(NonOrthGraph):
                     alignvert=-1, usefullheight=True,
                     usetex=tl.useTeX,
                     textpen=textpen,
+                    texpreservecolors=textcolorauto,
                     doc=self.document)
                 r.render()
 
@@ -448,6 +450,7 @@ class Polar(NonOrthGraph):
                     usefullheight=True,
                     usetex=tl.useTeX,
                     textpen=textpen,
+                    texpreservecolors=textcolorauto,
                     doc=self.document)
                 r.render()
 

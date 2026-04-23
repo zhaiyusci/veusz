@@ -453,6 +453,7 @@ class Ternary(NonOrthGraph):
             tbotlabels = self._getLabels(tickbot*mv, '%Vg')
 
             textpen = tickLabelSetn.makeQPen(painter)
+            textcolorauto = tickLabelSetn.textColorIsAuto()
             painter.setPen(textpen)
             font = tickLabelSetn.makeQFont(painter)
             painter.setFont(font)
@@ -468,6 +469,7 @@ class Ternary(NonOrthGraph):
                     painter, font, x, y, l, 0, 1, 0,
                     usetex=tl.useTeX,
                     textpen=textpen,
+                    texpreservecolors=textcolorauto,
                     doc=self.document)
                 bounds = r.render()
                 hlabbot = max(hlabbot, bounds[3]-bounds[1])
@@ -476,6 +478,7 @@ class Ternary(NonOrthGraph):
                     painter, font, x, y, l, 1, 0, 0,
                     usetex=tl.useTeX,
                     textpen=textpen,
+                    texpreservecolors=textcolorauto,
                     doc=self.document)
                 bounds = r.render()
                 wlableft = max(wlableft, bounds[2]-bounds[0])
@@ -484,6 +487,7 @@ class Ternary(NonOrthGraph):
                     painter, font, x, y, l, -1, 0, 0,
                     usetex=tl.useTeX,
                     textpen=textpen,
+                    texpreservecolors=textcolorauto,
                     doc=self.document)
                 bounds = r.render()
                 wlabright = max(wlabright, bounds[2]-bounds[0])
@@ -495,6 +499,7 @@ class Ternary(NonOrthGraph):
         if labelSetn is not None and not labelSetn.hide:
             # draw label on edges (if requested)
             textpen = labelSetn.makeQPen(painter)
+            textcolorauto = labelSetn.textColorIsAuto()
             painter.setPen(textpen)
             font = labelSetn.makeQFont(painter)
             painter.setFont(font)
@@ -517,6 +522,7 @@ class Ternary(NonOrthGraph):
                 align, 1,
                 usetex=labelSetn.useTeX,
                 textpen=textpen,
+                texpreservecolors=textcolorauto,
                 doc=self.document)
             painter.save()
             painter.translate(self._box[0]+self._width/2,
@@ -533,6 +539,7 @@ class Ternary(NonOrthGraph):
                 -align, -1,
                 usetex=labelSetn.useTeX,
                 textpen=textpen,
+                texpreservecolors=textcolorauto,
                 doc=self.document)
 
             painter.save()
@@ -550,6 +557,7 @@ class Ternary(NonOrthGraph):
                 -align, -1,
                 usetex=labelSetn.useTeX,
                 textpen=textpen,
+                texpreservecolors=textcolorauto,
                 doc=self.document)
 
             painter.save()

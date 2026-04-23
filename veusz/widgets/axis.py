@@ -1009,6 +1009,7 @@ class Axis(widget.Widget):
                 alignvert=ay, angle=angle,
                 usetex=tl.useTeX,
                 textpen=pen,
+                texpreservecolors=tl.textColorIsAuto(),
                 doc=self.document)
 
             if outerbounds is not None:
@@ -1125,6 +1126,7 @@ class Axis(widget.Widget):
             usefullheight=True,
             usetex=sl.useTeX,
             textpen=labelpen,
+            texpreservecolors=sl.textColorIsAuto(),
             doc=self.document)
 
         # make sure text is in plot rectangle

@@ -105,6 +105,7 @@ class _AxisLabels(threed.AxisLabels):
         font = self.ticklabelsprop.makeQFont(painter)
         painter.setFont(font)
         pen = self.ticklabelsprop.makeQPen(painter)
+        textcolorauto = self.ticklabelsprop.textColorIsAuto()
 
         label = self.ticklabels[index]
         renderer = utils.Renderer(
@@ -113,6 +114,7 @@ class _AxisLabels(threed.AxisLabels):
             usefullheight=True,
             usetex=self.ticklabelsprop.useTeX,
             textpen=pen,
+            texpreservecolors=textcolorauto,
             doc=self.document)
 
         # get text bounds
@@ -148,6 +150,7 @@ class _AxisLabels(threed.AxisLabels):
         font = self.axislabelprop.makeQFont(painter)
         painter.setFont(font)
         pen = self.axislabelprop.makeQPen(painter)
+        textcolorauto = self.axislabelprop.textColorIsAuto()
         painter.setPen(pen)
 
         renderer = utils.Renderer(
@@ -156,6 +159,7 @@ class _AxisLabels(threed.AxisLabels):
             usefullheight=True,
             usetex=self.axislabelprop.useTeX,
             textpen=pen,
+            texpreservecolors=textcolorauto,
             doc=self.document)
         renderer.render()
 

@@ -420,6 +420,10 @@ class Text(Settings):
         color = self.get('color').color(painter)
         return qt.QPen(color)
 
+    def textColorIsAuto(self):
+        """Return whether text color should preserve TeX-authored colors."""
+        return isinstance(self.color, str) and self.color.lower() == 'auto'
+
 class TeX(Settings):
     """Document-level TeX rendering settings."""
 

@@ -1258,6 +1258,7 @@ class _Renderer:
             usefullheight = False,
             doc = None,
             textpen = None,
+            texpreservecolors = False,
             texbackend = None,
             texengine = None,
             texpreamble = None):
@@ -1270,6 +1271,7 @@ class _Renderer:
         self.usefullheight = usefullheight
         self.doc = doc
         self.textpen = qt.QPen(textpen) if textpen is not None else None
+        self.texpreservecolors = texpreservecolors
         self.texbackend = texbackend
         self.texengine = texengine
         self.texpreamble = texpreamble
@@ -2494,6 +2496,7 @@ class _TeXRenderer(_Renderer):
                 if self.textpen is not None
                 else self.painter.pen().color().name()
             )
+            recolor_tex = self.textpen is not None and not self.texpreservecolors
 
             text_size = float(self.font.pointSizeF() or 20.0)
             exact_key = (
@@ -2527,7 +2530,7 @@ class _TeXRenderer(_Renderer):
                     cached = _svg_parse_ops(self.svgbytes, self.painter.dpi)
                     _tex_ops_cache_put(cache_key, cached)
                 self.ops, width, height = cached
-                if self.textpen is not None:
+                if recolor_tex:
                     self.ops = _tex_recolor_ops(self.ops, self.textpen.color())
                 self.size = qt.QSizeF(width, height)
                 _tex_preview_cache_put(preview_key, self.svgbytes)
@@ -2545,7 +2548,7 @@ class _TeXRenderer(_Renderer):
                     cached = _svg_parse_ops(self.svgbytes, self.painter.dpi)
                     _tex_ops_cache_put(cache_key, cached)
                 self.ops, width, height = cached
-                if self.textpen is not None:
+                if recolor_tex:
                     self.ops = _tex_recolor_ops(self.ops, self.textpen.color())
                 self.size = qt.QSizeF(width, height)
                 return
@@ -2564,7 +2567,7 @@ class _TeXRenderer(_Renderer):
                     cached = _svg_parse_ops(self.svgbytes, self.painter.dpi)
                     _tex_ops_cache_put(cache_key, cached)
                 self.ops, width, height = cached
-                if self.textpen is not None:
+                if recolor_tex:
                     self.ops = _tex_recolor_ops(self.ops, self.textpen.color())
                 self.size = qt.QSizeF(width, height)
             else:
@@ -2636,7 +2639,7 @@ def Renderer(painter, font, x, y, text,
              alignhorz = -1, alignvert = -1, angle = 0,
              usefullheight = False,
              doc = None, usetex = False,
-             textpen = None, texbackend = None,
+             textpen = None, texpreservecolors = False, texbackend = None,
              texengine = None, texpreamble = None):
 
     """Return an appropriate Renderer object depending on the text.
@@ -2666,6 +2669,7 @@ def Renderer(painter, font, x, y, text,
         painter, font, x, y, text,
         alignhorz=alignhorz, alignvert=alignvert,
         angle=angle, usefullheight=usefullheight,
-        doc=doc, textpen=textpen, texbackend=texbackend,
+        doc=doc, textpen=textpen, texpreservecolors=texpreservecolors,
+        texbackend=texbackend,
         texengine=texengine, texpreamble=texpreamble
     )
