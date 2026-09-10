@@ -88,57 +88,68 @@ Changes in 4.2:
 Please see the file `INSTALL.md` included in the distribution for installation details, or go to the [download page](https://veusz.github.io/download/).
 
 ## Development note: TeX integration
-This tree can optionally render selected text objects through either
-[MicroTeX](https://github.com/NanoMichael/MicroTeX) or a system TeX
-installation. The bundled MicroTeX source is shipped in this repository
-as a git submodule under `third_party/MicroTeX`.
+This tree can optionally render selected text objects through
+[MathJax 4](https://www.mathjax.org/) running inside an embedded
+[QuickJS](https://bellard.org/quickjs/) engine, through
+[MicroTeX](https://github.com/NanoMichael/MicroTeX), which is bundled as a
+git submodule under `third_party/MicroTeX`, or through a system TeX
+installation. Neither bundled engine needs an external binary or a Node.js
+runtime: both render in-process.
 
 Supported text settings expose a `Use TeX` checkbox plus a document-wide
-`TeX engine` choice. `MicroTeX` is the bundled default, while `latex`,
-`pdflatex`, `xelatex` and `lualatex` are available as system engine
-choices, and the engine field can also take an explicit executable path.
-The document settings also allow a custom preamble.
-The engines are expected to produce similar math, but not identical
-glyph metrics, spacing, or outlines.
+`TeX engine` choice. `MathJax` is the bundled default, the older bundled
+`MicroTeX` engine is still available, and `KaTeX` is offered as a much smaller
+and faster alternative (it is laid out as MathML rather than SVG, so it relies
+on the built-in MathML renderer); `latex`, `pdflatex`, `xelatex` and `lualatex`
+are available as system engine choices, and the engine field can also take an
+explicit executable path. The document settings also allow a custom preamble.
+The engines are expected to produce similar math, but not identical glyph
+metrics, spacing, or outlines.
 
 When the TeX option is enabled in the GUI, Veusz will:
 
-* use the bundled `third_party/MicroTeX` checkout by default
-* or use the system TeX toolchain when the selected engine is one of the system choices
-* build `build-microtex/<platform MicroTeX static library>` automatically during the normal Veusz build
-* build `build-microtexbridge/<platform microtexbridge library>` automatically during the normal Veusz build
-* package the MicroTeX resource tree and bridge into installed wheels under `veusz/microtex`
 * render the TeX source through the selected TeX engine
+* use the bundled MathJax bundle and `mathjaxbridge` library by default
+* or use the bundled `third_party/MicroTeX` checkout with the built
+  `microtexbridge` library when the engine is `MicroTeX`
+* or use the system TeX toolchain when the selected engine is one of the system choices
 * convert the generated SVG primitives into Veusz drawing paths for GUI and export output
 * keep the output engine-specific rather than forcing pixel-identical
-  equivalence between MicroTeX and the system TeX engines
+  equivalence between the bundled engines and the system TeX engines
 
-After cloning, the submodule must be initialized:
+The MicroTeX source is shipped as a git submodule, so after cloning it
+must be initialized:
 
     $ git clone <veusz-repository>
     $ cd veusz
     $ git submodule update --init --recursive
 
-The normal bundled MicroTeX build also requires a local C++ compiler
-toolchain together with CMake and a working Qt6 development
-installation. The system TeX choices require a TeX distribution that
-provides the selected engine plus `dvisvgm` on `PATH`; supported engine
-choices include `latex`, `pdflatex`, `xelatex` and `lualatex`, with a
-custom engine path also allowed in the document settings.
+The normal Veusz build then builds the bundled MicroTeX static library and
+its bridge automatically. That step requires a local C++ compiler
+toolchain together with CMake and a working Qt6 development installation
+(and tinyxml2, MicroTeX's only non-Qt dependency); set
+`VEUSZ_SKIP_MICROTEX_BUILD=1` to skip it during installation. On Windows
+`tools\build-microtexbridge.cmd` builds both the library and the bridge on
+its own.
 
-MicroTeX support is a built-in math subset, not a full LaTeX engine.
-It supports common mathematical notation, matrices, align-style
-layouts, text styles and some local macro definitions, but not general
-`\usepackage{...}` workflows or arbitrary external LaTeX packages.
-The system TeX choices behave like normal LaTeX-to-SVG pipelines and
-can use packages installed in that TeX distribution. Because the
-engines are different, MicroTeX and the system TeX engines should be
-treated as compatible rendering choices, not as bitwise-identical
-implementations.
+The MathJax bundle ships with the source tree under
+`src/mathjaxbridge/mathjax_bundle.js`, and its bridge library is built
+during the normal Veusz build as well (`tools/build-mathjaxbridge.cmd` on
+Windows); both are packaged into installed wheels under `veusz/mathjax`.
+Building that bridge requires a local C++ compiler toolchain and the
+QuickJS static library. The system TeX choices require a TeX distribution
+that provides the selected engine plus `dvisvgm` on `PATH`; supported
+engine choices include `latex`, `pdflatex`, `xelatex` and `lualatex`, with
+a custom engine path also allowed in the document settings.
 
-If you intentionally want to skip the bundled MicroTeX build during
-installation, set `VEUSZ_SKIP_MICROTEX_BUILD=1` before running the
-build command.
+MathJax support covers a wide LaTeX subset (AMS, `\mathbb`, `\mathfrak`,
+`\mathcal`, `mhchem`, the `physics` package, matrices, `cases`, ...). The
+bundled MicroTeX support is a built-in math subset: common mathematical
+notation, matrices, align-style layouts, text styles and some local macro
+definitions. Neither is a general `\usepackage{...}` workflow -- the
+available packages are the ones compiled into the bundle or library.
+Because the engines are different, they should be treated as compatible
+rendering choices, not as bitwise-identical implementations.
 
 Please see `INSTALL.md` for the development setup requirements, build
 steps and optional environment variables used by this integration.

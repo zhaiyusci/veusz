@@ -430,6 +430,11 @@ class TeX(Settings):
     def __init__(self, name, **args):
         Settings.__init__(self, name, setnsmode='widgetsettings', **args)
 
+        # Legacy setting kept for reading documents written before the
+        # engine setting existed.  'microtex' is retained purely as the
+        # value old documents used for "the built-in engine"; it no longer
+        # names an engine (the built-in engine is MathJax now).  Only the
+        # explicit 'system' value still has an effect.
         self.add( setting.Choice(
             'backend',
             ['microtex', 'system'],
@@ -438,10 +443,17 @@ class TeX(Settings):
             descr=_('Legacy TeX backend selection'),
             usertext=_('Backend') ),
             readonly=True )
+        # Default to the MathJax (QuickJS) engine: it needs no external
+        # binaries, covers a wide LaTeX subset (\mathbb, \mathfrak, mhchem,
+        # ...) and reports its baseline so TeX labels line up with each
+        # other and with plain text (see veusz/utils/textrender.py).
+        # Documents written before the engine setting existed selected the
+        # system LaTeX engine through the legacy backend setting, which is
+        # still honoured (see _TeXRenderer._initText).
         self.add( setting.ChoiceOrMore(
             'engine',
-            ['microtex', 'latex', 'pdflatex', 'xelatex', 'lualatex'],
-            'microtex',
+            ['mathjax', 'katex', 'microtex', 'latex', 'pdflatex', 'xelatex', 'lualatex'],
+            'mathjax',
             descr=_('TeX engine used by all text objects'),
             usertext=_('Engine') ) )
         self.add( setting.Notes(

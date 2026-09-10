@@ -3,6 +3,7 @@ include .gitmodules
 include MANIFEST.in *.py setup.cfg pyproject.toml run_veusz_inplace
 include scripts/veusz
 recursive-include src *.c *.cpp *.h README LICENSE_* QtMml*
+recursive-include src/mathjaxbridge *.js
 recursive-include third_party/MicroTeX *
 include VERSION
 recursive-include examples *.vsz *.py *.csv *.dat

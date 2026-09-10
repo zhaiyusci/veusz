@@ -136,6 +136,8 @@ for pattern in data_glob:
     for fn in glob.glob(str(pattern)):
         datas.append((os.path.relpath(fn, ROOT), fn, 'DATA'))
 
+# MicroTeX TeX backend: bundled resource tree, bridge library and its
+# tinyxml2 runtime dependency
 _add_data_tree(
     ROOT / 'third_party' / 'MicroTeX' / 'res',
     Path('veusz') / 'microtex' / 'res',
@@ -164,6 +166,27 @@ if tinyxml2_runtime is not None:
     analysis.binaries.append((
         os.path.join('veusz', 'microtex', tinyxml2_runtime.name),
         str(tinyxml2_runtime),
+        'BINARY',
+    ))
+
+# MathJax / KaTeX TeX backends: the JS bundles plus the QuickJS host library
+for _bundle_name in ('mathjax_bundle.js', 'katex_bundle.js'):
+    _bundle = ROOT / 'src' / 'mathjaxbridge' / _bundle_name
+    if _bundle.exists():
+        datas.append((
+            os.path.join('veusz', 'mathjax', _bundle_name),
+            str(_bundle),
+            'DATA',
+        ))
+
+mathjax_bridge = _find_first_existing(
+    BUILD_ROOT / 'build-mathjaxbridge',
+    ('mathjaxbridge.dll', 'libmathjaxbridge.dll', 'libmathjaxbridge.so',
+     'libmathjaxbridge.dylib', 'mathjaxbridge.dylib'))
+if mathjax_bridge is not None:
+    analysis.binaries.append((
+        os.path.join('veusz', 'mathjax', mathjax_bridge.name),
+        str(mathjax_bridge),
         'BINARY',
     ))
 

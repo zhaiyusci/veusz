@@ -17,3 +17,6 @@ Documents/manual/
 
 .idea/
 veusz.egg-info/
+# build artifacts of this tree
+build-*/
+veusz/mathjaxbridge.dll

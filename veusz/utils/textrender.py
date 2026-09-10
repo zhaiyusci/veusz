@@ -38,6 +38,7 @@ from . import points
 from ..helpers import qtmml
 from ..helpers import recordpaint
 from ..helpers.qtloops import RotatedRectangle
+from . import mathjaxbridge
 from . import microtexbridge
 
 def _(text, disambiguation=None, context='TextRender'):
@@ -1659,6 +1660,66 @@ def _svg_strip_ns(tag):
     return _svg_ns_re.sub('', tag)
 
 
+_svg_root_re = re.compile(rb'<svg[^>]*>')
+_svg_height_pt_re = re.compile(rb'\bheight="([-0-9.eE+]+)pt"')
+_svg_valign_re = re.compile(
+    rb'vertical-align:\s*([-0-9.eE+]+)\s*(pt|px|in|mm|cm|ex|em)?')
+
+
+def _svg_baseline_descent(svgbytes, dpi, ink_height_px=0.0):
+    """How far the rendered ink extends below the MathJax baseline, in pixels.
+
+    MathJax writes the position of the baseline inside the rendered box into
+    the root <svg> element, as style="vertical-align: -Npt" (negative means
+    the box reaches N pt below the baseline; it writes a bare "0" when the
+    baseline is at the bottom of the box).  Veusz needs this to anchor TeX
+    text on its baseline like _StdRenderer does; without it the ink bounding
+    box is pinned to the anchor, so a label containing a descender (or
+    display-style limits such as \\sum) would sit at a different height from
+    a label without one, and would not line up with plain text.
+
+    Returns 0.0 when the backend reports no baseline, or in units this helper
+    cannot resolve without font metrics (ex/em), which keeps the previous
+    ink-bottom-anchored geometry.
+    """
+    if not svgbytes:
+        return 0.0
+    root = _svg_root_re.search(bytes(svgbytes))
+    if root is None:
+        return 0.0
+    valign = _svg_valign_re.search(root.group(0))
+    if valign is None:
+        return 0.0
+    try:
+        value = float(valign.group(1))
+    except ValueError:
+        return 0.0
+    unit = (valign.group(2) or b'px').decode('ascii')
+    if unit == 'pt':
+        descent = -value * dpi / 72.0
+    elif unit == 'px':
+        descent = -value
+    elif unit in ('in', 'mm', 'cm'):
+        per_inch = {'in': 1.0, 'mm': 1.0 / 25.4, 'cm': 1.0 / 2.54}[unit]
+        descent = -value * per_inch * dpi
+    else:
+        return 0.0
+    if descent <= 0:
+        return 0.0
+
+    # The ink bounding box measured from the paths can differ slightly from
+    # the box declared on <svg>; scale so that the two agree.
+    height = _svg_height_pt_re.search(root.group(0))
+    if height is not None and ink_height_px > 0:
+        try:
+            declared = float(height.group(1)) * dpi / 72.0
+        except ValueError:
+            declared = 0.0
+        if declared > 0:
+            descent *= ink_height_px / declared
+    return descent
+
+
 def _svg_parse_length(value, dpi):
     if value is None:
         return None
@@ -1708,7 +1769,13 @@ def _svg_parse_transform(value):
                 part.rotate(nums[0])
         else:
             continue
-        transform = transform * part
+        # Qt's A * B means "apply A, then B", while an SVG transform list is
+        # applied left to right onto the local coordinates: in
+        # transform="translate(462,413) scale(0.707)" the scale happens first
+        # and the translate last.  Accumulate accordingly, otherwise scripts
+        # (which MathJax positions exactly that way) land at translate*scale
+        # instead of translate + scale*local, i.e. far too far left.
+        transform = part * transform
 
     return transform
 
@@ -1980,7 +2047,15 @@ def _svg_parse_text_path(elem, style, dpi):
     font = qt.QFont()
     family = style.get('font-family')
     if family:
+        # MicroTeX names its own bundled fonts, which are registered by
+        # _ensure_microtex_fonts_loaded(); map those names onto the families
+        # Qt knows about.
         aliases = _ensure_microtex_fonts_loaded()
+        # Anything else is resolved by Qt against the system fonts.  MathJax
+        # emits generic families here (e.g. "serif") for characters its
+        # bundled math font does not contain -- CJK text inside \text{},
+        # for instance.  System TeX output converted by pdftocairo names real
+        # TeX fonts, which Qt substitutes with whatever it has.
         font.setFamily(aliases.get(family.lower(), family))
     size = style.get('font-size')
     fontsize = max(_svg_parse_text_size(size), 1e-6)
@@ -2257,6 +2332,71 @@ def _doc_tex_settings(doc):
         return None
 
 
+def _resolve_tex_engine(doc, texengine):
+    """Work out which engine a text object uses.
+
+    Mirrors the resolution in _TeXRenderer._initText so that callers can pick
+    a non-SVG engine (KaTeX) before the TeX renderer is constructed.
+    """
+    engine = texengine
+    texsettings = _doc_tex_settings(doc)
+    if engine is None and texsettings is not None:
+        engine = texsettings.engine
+    if engine is None:
+        engine = 'mathjax'
+    if texsettings is not None and getattr(texsettings, 'backend', None) == 'system':
+        engine = 'latex'
+    return engine
+
+
+# -----------------------------------------------------------------------
+# KaTeX: TeX -> MathML
+#
+# KaTeX cannot emit SVG (it lays out HTML/CSS or MathML), so its output is fed
+# to the MathML renderer veusz already has, rather than to the SVG -> path
+# pipeline used by the MathJax/MicroTeX engines.  The TeX is turned into MathML
+# by the KaTeX bundle running inside the same QuickJS host as the MathJax
+# bundle (see veusz/utils/mathjaxbridge.py).
+# -----------------------------------------------------------------------
+
+_KATEX_MML_CACHE = OrderedDict()
+_KATEX_MML_CACHE_LIMIT = 256
+
+
+def _xml_escape(text):
+    return (text.replace('&', '&amp;').replace('<', '&lt;')
+            .replace('>', '&gt;'))
+
+
+def _katex_mathml(tex):
+    """Convert TeX to MathML with KaTeX, caching the result.
+
+    Never raises: a failure becomes an <merror> so the label shows what went
+    wrong instead of disappearing.
+    """
+    cached = _KATEX_MML_CACHE.get(tex)
+    if cached is not None:
+        _KATEX_MML_CACHE.move_to_end(tex)
+        return cached
+
+    try:
+        bundle = mathjaxbridge.katex_bundle_path()
+        if bundle is None:
+            raise RuntimeError(
+                _('KaTeX bundle (katex_bundle.js) not found'))
+        mathml = mathjaxbridge.render_bundle(bundle, 'render', tex)
+        if not mathml.lstrip().startswith('<math'):
+            raise RuntimeError(_('KaTeX returned no MathML'))
+    except Exception as e:
+        mathml = ('<math><merror><mtext>%s</mtext></merror></math>'
+                  % _xml_escape(str(e)))
+
+    _KATEX_MML_CACHE[tex] = mathml
+    while len(_KATEX_MML_CACHE) > _KATEX_MML_CACHE_LIMIT:
+        _KATEX_MML_CACHE.popitem(last=False)
+    return mathml
+
+
 def _tex_ops_cache_get(key):
     value = _TEX_OPS_CACHE.get(key)
     if value is None:
@@ -2324,6 +2464,14 @@ def _tex_error_cache_put(key, value):
 
 
 def _render_tex_backend(engine, text, text_size, foreground, background, preamble):
+    if engine == 'mathjax':
+        return mathjaxbridge.render_svg(
+            text,
+            text_size=text_size,
+            foreground=foreground,
+            background=background,
+        )
+
     if engine == 'microtex':
         return microtexbridge.render_svg(
             text,
@@ -2470,6 +2618,7 @@ class _TeXRenderer(_Renderer):
         self.size = qt.QSizeF(1, 1)
         self.ops = []
         self.fallbackrenderer = None
+        self._ink_metrics_cache = None
         try:
             texsettings = _doc_tex_settings(self.doc)
 
@@ -2477,12 +2626,14 @@ class _TeXRenderer(_Renderer):
             if engine is None and texsettings is not None:
                 engine = texsettings.engine
             if engine is None:
-                engine = 'microtex'
+                engine = 'mathjax'
 
+            # documents written before the engine setting existed selected
+            # the system LaTeX engine through the old backend setting
             legacy_backend = None
             if texsettings is not None and hasattr(texsettings, 'backend'):
                 legacy_backend = texsettings.backend
-            if engine == 'microtex' and legacy_backend == 'system':
+            if legacy_backend == 'system':
                 engine = 'latex'
 
             preamble = self.texpreamble
@@ -2499,6 +2650,12 @@ class _TeXRenderer(_Renderer):
             recolor_tex = self.textpen is not None and not self.texpreservecolors
 
             text_size = float(self.font.pointSizeF() or 20.0)
+            if text_size <= 0:
+                # fonts specified in pixels have no point size; the backend
+                # needs points to convert ex -> pt
+                pixperpt = getattr(self.painter, 'pixperpt', None) or (
+                    float(self.painter.dpi) / 72.0)
+                text_size = max(float(self.font.pixelSize()), 1.0) / pixperpt
             exact_key = (
                 engine,
                 preamble,
@@ -2598,7 +2755,38 @@ class _TeXRenderer(_Renderer):
     def _getWidthHeight(self):
         if self.fallbackrenderer is not None and self.svgbytes is None:
             return self.fallbackrenderer._getWidthHeight()
-        return self.size.width(), self.size.height(), 0
+
+        ascent, descent = self._ink_metrics()
+        if ascent is None:
+            # no baseline information (an error box, or an engine that does
+            # not report one): keep the ink bounding box anchored
+            return self.size.width(), self.size.height(), 0
+        # Total height is the ink above the baseline; the descent reserved
+        # for alignment mirrors _StdRenderer (0, or the font descent when
+        # usefullheight is requested), so that the baseline lands where the
+        # framework expects it and TeX labels line up with plain text.
+        reserved = 0.0
+        if self.usefullheight:
+            reserved = FontMetrics(self.font, self.painter.device()).descent()
+        return self.size.width(), ascent, reserved
+
+    def _ink_metrics(self):
+        """(ascent, descent) of the drawn ink relative to the baseline.
+
+        Both are in pixels, and None when the backend reports no baseline.
+        MathJax writes the baseline position into the root <svg> element
+        (vertical-align), which is what makes baseline-anchored placement
+        possible.
+        """
+        if self._ink_metrics_cache is None:
+            descent = _svg_baseline_descent(
+                self.svgbytes, float(self.painter.dpi), self.size.height())
+            if descent <= 0 or not self.ops:
+                self._ink_metrics_cache = (None, None)
+            else:
+                self._ink_metrics_cache = (
+                    self.size.height() - descent, descent)
+        return self._ink_metrics_cache
 
     def render(self):
         """Render the SVG text."""
@@ -2614,10 +2802,14 @@ class _TeXRenderer(_Renderer):
         if self.ops:
             p.translate(self.xi, self.yi)
             p.rotate(self.angle)
-            # Keep the same geometry model as the standard text renderer:
-            # self.xi/self.yi is the bottom-left anchor of the unrotated
-            # text box, and alignment has already been resolved in getBounds().
-            p.translate(0.0, -self.size.height())
+            # self.xi/self.yi is where the framework expects the baseline of
+            # the text (see _getWidthHeight).  The ops are normalised to the
+            # ink bounding box, so shift up by the ink ascent to put the
+            # baseline on that point; without baseline information the ink
+            # bottom is used, as before.
+            ascent, _ = self._ink_metrics()
+            p.translate(0.0, -(ascent if ascent is not None
+                               else self.size.height()))
             for path, pen, brush in self.ops:
                 p.setPen(pen)
                 p.setBrush(brush)
@@ -2658,7 +2850,12 @@ def Renderer(painter, font, x, y, text,
     alignment is in the painter frame, not the text frame
     """
 
-    if usetex:
+    if usetex and _resolve_tex_engine(doc, texengine) == 'katex':
+        # KaTeX lays out MathML, which veusz renders with the MathML renderer
+        # it already has (used for <math>...</math> label text).
+        text = _katex_mathml(text)
+        r = _MmlRenderer
+    elif usetex:
         r = _TeXRenderer
     elif mml_re.match(text):
         r = _MmlRenderer

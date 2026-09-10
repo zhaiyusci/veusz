@@ -16,6 +16,14 @@
 #include <mutex>
 #include <string>
 
+// The C ABI is called through ctypes, so the symbols have to be exported
+// explicitly: MSVC does not export anything from a DLL on its own.
+#ifdef _WIN32
+#  define MICROTEX_EXPORT __declspec(dllexport)
+#else
+#  define MICROTEX_EXPORT __attribute__((visibility("default")))
+#endif
+
 namespace {
 
 bool g_initialized = false;
@@ -37,7 +45,7 @@ char* dupString(const std::string& s) {
 
 }  // namespace
 
-extern "C" int microtex_render_svg(
+extern "C" MICROTEX_EXPORT int microtex_render_svg(
     const char* tex_utf8,
     float text_size,
     int width,
@@ -137,6 +145,6 @@ extern "C" int microtex_render_svg(
   }
 }
 
-extern "C" void microtex_free(void* p) {
+extern "C" MICROTEX_EXPORT void microtex_free(void* p) {
   std::free(p);
 }

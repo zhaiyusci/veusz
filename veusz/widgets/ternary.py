@@ -464,10 +464,12 @@ class Ternary(NonOrthGraph):
 
             # draw tick labels in each direction
             hlabbot = wlableft = wlabright = 0
+            # note: 'tl' below is the tick length (a float), not the tick
+            # label settings, so the TeX flag must come from tickLabelSetn
             for l, x, y in zip(tbotlabels, tickbotline[2], tickbotline[3]+off):
                 r = utils.Renderer(
                     painter, font, x, y, l, 0, 1, 0,
-                    usetex=tl.useTeX,
+                    usetex=tickLabelSetn.useTeX,
                     textpen=textpen,
                     texpreservecolors=textcolorauto,
                     doc=self.document)
@@ -476,7 +478,7 @@ class Ternary(NonOrthGraph):
             for l, x, y in zip(tleftlabels, tickleftline[2]-off-sp, tickleftline[3]):
                 r = utils.Renderer(
                     painter, font, x, y, l, 1, 0, 0,
-                    usetex=tl.useTeX,
+                    usetex=tickLabelSetn.useTeX,
                     textpen=textpen,
                     texpreservecolors=textcolorauto,
                     doc=self.document)
@@ -485,7 +487,7 @@ class Ternary(NonOrthGraph):
             for l, x, y in zip(trightlabels,tickrightline[2]+off+sp, tickrightline[3]):
                 r = utils.Renderer(
                     painter, font, x, y, l, -1, 0, 0,
-                    usetex=tl.useTeX,
+                    usetex=tickLabelSetn.useTeX,
                     textpen=textpen,
                     texpreservecolors=textcolorauto,
                     doc=self.document)

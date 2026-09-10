@@ -65,7 +65,7 @@ you will need to disable quarantine for it to run. Please see
 * [pyemf3](https://github.com/jeremysanders/pyemf3) >= 3.3, for EMF output
 * [iminuit](https://github.com/iminuit/iminuit) >= 2, for better fitting
 * [CMake](https://cmake.org/), if using the bundled MicroTeX bridge described below
-* a working C++ compiler toolchain, if building Veusz extensions or the optional MicroTeX bridge
+* a working C++ compiler toolchain, if building Veusz extensions or the bundled TeX bridges
 * a TeX distribution providing the selected engine and `dvisvgm`, if using one of the system TeX choices
 * [Ghostscript](https://www.ghostscript.com/), for EPS/PS output
 * [dbus-python](https://dbus.freedesktop.org/doc/dbus-python/), for D-BUS support
@@ -100,32 +100,39 @@ installer.
 
 ### Optional TeX integration for development
 
-This source tree can optionally render selected text through either
-MicroTeX or a system TeX installation. The MicroTeX source is bundled
-in this repository as a git submodule at `third_party/MicroTeX`.
+This source tree can optionally render selected text through MathJax 4
+running inside an embedded QuickJS engine, through the bundled MicroTeX
+library, or through a system TeX installation.
 
 The `Use TeX` checkbox stays on the supported text settings, but the
 `TeX engine` choice itself is document-wide and lives on the document
-root settings. `MicroTeX` is the bundled default; `latex`,
-`pdflatex`, `xelatex` and `lualatex` are available as system engine
-choices. The document settings also allow a custom preamble. The engine
-field also accepts an explicit executable path.
+root settings. `MathJax` is the bundled default and requires no external
+binary and no Node.js runtime; the older bundled `MicroTeX` engine is
+still available; `KaTeX` is bundled as a much smaller alternative that is
+laid out as MathML and therefore drawn by the built-in MathML renderer;
+`latex`, `pdflatex`, `xelatex` and `lualatex` are available as system engine
+choices. The document settings also allow a custom preamble. The engine field
+also accepts an explicit executable path.
 The engines should render the same formulae correctly, but they will
 not necessarily match in glyph metrics, spacing or outline shape.
 
 Additional requirements:
 
+* the bundled MicroTeX source, which is a git submodule and therefore has
+  to be initialized after cloning:
+
+      $ git clone <veusz-repository>
+      $ cd veusz
+      $ git submodule update --init --recursive
+
 * `cmake`, used to build the bundled MicroTeX static library and the
   Veusz-side `microtexbridge` helper
-* a local C++ compiler toolchain, used to compile both the bundled
-  MicroTeX library and the bridge
-* a working Qt6 development installation for the bridge build
-
-After cloning, initialize the bundled submodule:
-
-    $ git clone <veusz-repository>
-    $ cd veusz
-    $ git submodule update --init --recursive
+* a local C++ compiler toolchain, used to compile the bundled MicroTeX
+  library, the `microtexbridge` helper and the `mathjaxbridge` helper
+  against the bundled QuickJS static library
+* a working Qt6 development installation for the bridge builds
+* a TeX distribution providing the selected engine and `dvisvgm`, if
+  using one of the system TeX choices
 
 Typical setup:
 
@@ -134,17 +141,24 @@ Typical setup:
     $ pip3 install numpy PyQt6 sip astropy h5py tomli
     $ pip3 install -v .
 
-The normal Veusz build now also builds the bundled MicroTeX library
-and the Veusz-side bridge automatically. In other words, a standard
-`pip3 install -v .` in a source checkout is expected to produce:
+The normal Veusz build also builds the bundled MicroTeX library with its
+bridge, and the `mathjaxbridge` helper library, automatically. In other
+words, a standard `pip3 install -v .` in a source checkout is expected to
+produce:
 
 1. `build-microtex/<platform MicroTeX static library>`
 2. `build-microtexbridge/<platform microtexbridge library>`
-3. an installed runtime payload under `veusz/microtex` containing the
-   packaged `res` tree and the bridge library
+3. `build-mathjaxbridge/<platform mathjaxbridge library>`
+4. an installed runtime payload under `veusz/microtex` containing the
+   packaged `res` tree and the MicroTeX bridge library
+5. an installed runtime payload under `veusz/mathjax` containing the
+   packaged `mathjax_bundle.js` and the MathJax bridge library
 
-If you want to inspect or debug those steps manually, a typical manual
-build is:
+If the bundled MicroTeX build should be skipped during installation, set
+`VEUSZ_SKIP_MICROTEX_BUILD=1` before running the build command.
+
+If you want to inspect or debug the MicroTeX steps manually, a typical
+manual build is:
 
     $ cmake -S third_party/MicroTeX -B build-microtex -DQT=ON -DBUILD_EXAMPLE=OFF
     $ cmake --build build-microtex -j2
@@ -153,15 +167,34 @@ build is:
         -DMICROTEX_LIB=$PWD/build-microtex/<platform MicroTeX static library>
     $ cmake --build build-microtexbridge -j2
 
+On Windows, `tools\build-microtexbridge.cmd` runs the whole chain (tinyxml2,
+the MicroTeX library and the bridge) with the cmake that ships with Qt and
+the serial NMake generator; it builds tinyxml2 into
+`tools\tmp\tinyxml2\install` first when no installed package is found:
+
+    > tools\build-microtexbridge.cmd
+
+The MathJax companion library ships with the source tree under
+`src/mathjaxbridge/mathjax_bundle.js`; on Windows the helper is built
+directly with the compiler from a developer prompt (no CMake required):
+
+    > tools\build-mathjaxbridge.cmd
+
 At runtime, Veusz will normally:
 
-1. use the packaged `veusz/microtex/res` and packaged bridge library
-   in an installed build
+1. use the packaged `veusz/microtex/res` tree and packaged bridge library
+   in an installed build when the engine is `MicroTeX`
 2. otherwise use the bundled `third_party/MicroTeX` source checkout and
-   the built bridge library in a source checkout
-3. load that bridge on first use of a `Use TeX` text setting when the
-   engine is `MicroTeX`
-4. call the system TeX toolchain directly when the engine is one of the
+   the bridge library built under `build-microtexbridge/` in a source
+   checkout
+3. use the packaged `veusz/mathjax` bundle and bridge library in an
+   installed build when the engine is `MathJax`
+4. otherwise use the `src/mathjaxbridge/mathjax_bundle.js` bundle and
+   the bridge library built under `build-mathjaxbridge/` in a source
+   checkout
+5. load those bridges on first use of a `Use TeX` text setting when the
+   engine is `MathJax` or `MicroTeX`
+6. call the system TeX toolchain directly when the engine is one of the
    system TeX choices
 
 If the build-time artifacts are missing, Veusz still keeps the runtime
@@ -179,20 +212,34 @@ environment variables can be used:
 * `VEUSZ_SKIP_MICROTEX_BUILD`
   Skip the automatic bundled MicroTeX build during `pip install` or
   `setup.py build_ext`
+* `VEUSZ_MATHJAX_BUNDLE`
+  Path to the `mathjax_bundle.js` to evaluate
+* `VEUSZ_MATHJAX_BRIDGE`
+  Path to a prebuilt `mathjaxbridge` library
+* `VEUSZ_MATHJAX_EXHEIGHT`
+  Ratio of the ex unit to the em size of the math font in the bundle
+  (default 0.442, the `x_height` of the bundled New Computer Modern font).
+  MathJax emits its SVG in ex units, so this is what makes a formula come out
+  at the requested point size.
+* `VEUSZ_QUICKJS_SRC`, `VEUSZ_QUICKJS_LIB`
+  Paths used when building the `mathjaxbridge` helper against a QuickJS
+  checkout or prebuilt static library
 
 The `Use TeX` checkbox is available on supported text settings,
 including general labels and axis/tick label properties. GUI display,
 bitmap export and SVG export all use the same parsed SVG geometry for
 each engine, so a given engine stays internally consistent.
 
-MicroTeX support should be understood as a built-in math subset, not
-as a full LaTeX engine. It is suitable for common formula syntax,
-matrices, align-style layouts, text styles and some local macro
-definitions, but not for general `\usepackage{...}` workflows or
-arbitrary external LaTeX packages. The system TeX choices behave like
-normal LaTeX-to-SVG pipelines and can use packages installed in that
-TeX distribution. The engines are compatible choices, not
-bit-for-bit identical renderers.
+MathJax support should be understood as a wide built-in LaTeX subset,
+not as a general `\usepackage{...}` workflow: the available packages are
+the ones compiled into the bundle (AMS, `\mathbb`, `\mathfrak`,
+`\mathcal`, `mhchem`, the `physics` package, matrices, `cases`, ...).
+The bundled MicroTeX support is likewise a built-in math subset: common
+mathematical notation, matrices, align-style layouts, text styles and
+some local macro definitions, but not a full LaTeX engine. The system TeX
+choices behave like normal LaTeX-to-SVG pipelines and can use packages
+installed in that TeX distribution. The engines are compatible choices,
+not bit-for-bit identical renderers.
 
 ### Installing into system Python directories
 

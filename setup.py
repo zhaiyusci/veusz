@@ -48,6 +48,27 @@ from pyqt_setuptools import sip_build_ext
 ROOT = Path(__file__).resolve().parent
 
 
+def _find_first_existing(root, names):
+    if not root.exists():
+        return None
+    search_roots = [root]
+    if os.name == "nt":
+        search_roots = [
+            root / "Release",
+            root / "RelWithDebInfo",
+            root,
+            root / "Debug",
+        ]
+    for search_root in search_roots:
+        if not search_root.exists():
+            continue
+        for name in names:
+            for candidate in sorted(search_root.rglob(name)):
+                if candidate.is_file():
+                    return candidate
+    return None
+
+
 def _microtex_library_candidates():
     if os.name == "nt":
         return ("LaTeX.lib", "libLaTeX.a")
@@ -62,6 +83,19 @@ def _microtex_bridge_candidates():
     if sys.platform == "darwin":
         return ("libmicrotexbridge.dylib", "microtexbridge.dylib")
     return ("libmicrotexbridge.so", "microtexbridge.so")
+
+
+def _read_cache_value(cache_path, name):
+    if not cache_path.exists():
+        return None
+    prefix = f"{name}:"
+    alt_prefix = f"{name}="
+    for line in cache_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        if line.startswith(prefix):
+            return line.split("=", 1)[1].strip()
+        if line.startswith(alt_prefix):
+            return line.split("=", 1)[1].strip()
+    return None
 
 
 def _tinyxml2_runtime_candidate():
@@ -95,40 +129,6 @@ def _tinyxml2_runtime_candidate():
             candidate = directory / f"{stem}.dll"
             if candidate.exists():
                 return candidate
-    return None
-
-
-def _find_first_existing(root, names):
-    if not root.exists():
-        return None
-    search_roots = [root]
-    if os.name == "nt":
-        search_roots = [
-            root / "Release",
-            root / "RelWithDebInfo",
-            root,
-            root / "Debug",
-        ]
-    for search_root in search_roots:
-        if not search_root.exists():
-            continue
-        for name in names:
-            for candidate in sorted(search_root.rglob(name)):
-                if candidate.is_file():
-                    return candidate
-    return None
-
-
-def _read_cache_value(cache_path, name):
-    if not cache_path.exists():
-        return None
-    prefix = f"{name}:"
-    alt_prefix = f"{name}="
-    for line in cache_path.read_text(encoding="utf-8", errors="replace").splitlines():
-        if line.startswith(prefix):
-            return line.split("=", 1)[1].strip()
-        if line.startswith(alt_prefix):
-            return line.split("=", 1)[1].strip()
     return None
 
 
@@ -169,6 +169,10 @@ def _cmake_build_cmd(build_dir):
 
 
 def build_bundled_microtex():
+    """Build the bundled MicroTeX library and its Veusz-side bridge.
+
+    Set VEUSZ_SKIP_MICROTEX_BUILD=1 to skip this step during a build.
+    """
     if os.environ.get("VEUSZ_SKIP_MICROTEX_BUILD"):
         print("[setup.py] skipping bundled MicroTeX build because VEUSZ_SKIP_MICROTEX_BUILD is set", flush=True)
         return
@@ -262,7 +266,7 @@ class smart_install_data(install_data):
                 f for f in self.data_files if f[0][-8:] != 'examples'
             ]
 
-        self.data_files = list(self.data_files) + microtexRuntimeData()
+        self.data_files = list(self.data_files) + microtexRuntimeData() + mathjaxRuntimeData()
 
         return install_data.run(self)
 
@@ -309,6 +313,34 @@ def microtexRuntimeData():
     tinyxml2 = _tinyxml2_runtime_candidate()
     if tinyxml2 is not None:
         data.append((os.path.join("microtex"), [str(tinyxml2)]))
+
+    return data
+
+
+def _mathjax_bridge_candidates():
+    if os.name == "nt":
+        return ("mathjaxbridge.dll", "libmathjaxbridge.dll")
+    if sys.platform == "darwin":
+        return ("libmathjaxbridge.dylib", "mathjaxbridge.dylib")
+    return ("libmathjaxbridge.so", "mathjaxbridge.so")
+
+
+def mathjaxRuntimeData():
+    """Return packaged runtime assets for installed MathJax support.
+
+    The same DLL hosts every JS bundle (it is a JS host, not a MathJax
+    renderer), so the KaTeX bundle travels with it.
+    """
+    data = []
+
+    for name in ("mathjax_bundle.js", "katex_bundle.js"):
+        bundle = ROOT / "src" / "mathjaxbridge" / name
+        if bundle.exists():
+            data.append((os.path.join("mathjax"), [str(bundle)]))
+
+    bridge = _find_first_existing(ROOT / "build-mathjaxbridge", _mathjax_bridge_candidates())
+    if bridge is not None:
+        data.append((os.path.join("mathjax"), [str(bridge)]))
 
     return data
 
