@@ -115,7 +115,7 @@ class PaintHelper:
 
     def __init__(self, document, pagesize,
                  scaling=1, devicepixelratio=1, dpi=(100, 100),
-                 directpaint=None):
+                 directpaint=None, rasterdpi=None, rasterantialias=True):
         """
         pagesize: tuple (pixelw, pixelh), which can be float.
          This is the page size in the coordinates presented to graph drawing.
@@ -124,10 +124,15 @@ class PaintHelper:
         dpi: tuple of X and Y dpi for graph coordinates
         directpaint: use this painter directly, rather than using RecordPainter
           to store each widget painting
+        rasterdpi: optional (X, Y) DPI for raster layers, independent of the
+          higher precision coordinates used by a vector output device
+        rasterantialias: antialias raster layers as for bitmap export
         """
 
         self.document = document
         self.dpi = dpi
+        self.rasterdpi = rasterdpi
+        self.rasterantialias = rasterantialias
         self.scaling = scaling
         # scaling factor, excluding high-DPI factor (for controlgraphs)
         self.cgscale = scaling / devicepixelratio

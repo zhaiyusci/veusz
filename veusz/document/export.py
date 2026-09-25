@@ -474,7 +474,10 @@ class AsyncExport(qt.QObject):
         phelpers = []
         for page in pages:
             size = self.doc.pageSize(page, dpi=dpi, integer=False)
-            phelper = painthelper.PaintHelper(self.doc, size, dpi=dpi)
+            phelper = painthelper.PaintHelper(
+                self.doc, size, dpi=dpi,
+                rasterdpi=(self.svgdpi, self.svgdpi) if ext == '.svg' else None,
+                rasterantialias=self.antialias)
             self.doc.paintTo(phelper, page)
             phelpers.append(phelper)
 

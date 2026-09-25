@@ -20,6 +20,8 @@
 
 """Image plotting from 2d datasets."""
 
+import math
+
 import numpy as N
 
 from .. import qtall as qt
@@ -316,7 +318,6 @@ class Image(plotters.GenericPlotter):
             y0 = int(min(yedgep[0], yedgep[-1]))
             y1 = int(max(yedgep[0], yedgep[-1]))
 
-            print(painter.device().logicalDpiY())
             if drawmode == 'resample-pixels':
                 # resample image to a flat bitmap
                 image = qtloops.resampleNonlinearImage(
@@ -348,6 +349,54 @@ class Image(plotters.GenericPlotter):
         #             xedgep[x+1]-xedgep[x],
         #             yedgep[y+1]-yedgep[y]))
 
+    def _drawAtRasterDpi(self, painter, axes, posn, clip, data, image):
+        """Render the same heatmap drawing as PNG on the output pixel grid.
+
+        SVG uses higher precision coordinates than its requested raster DPI.
+        Evaluate the normal drawing path at the latter, rather than resizing
+        an image which has already been rendered at the internal DPI.
+        """
+        helper = painter.helper
+        dpix, dpiy = helper.rasterdpi
+        sx, sy = dpix/helper.dpi[0], dpiy/helper.dpi[1]
+        bounds = clip.intersected(qt.QRectF(0, 0, *helper.pagesize))
+        if bounds.isEmpty():
+            return
+
+        # Align to the page's pixel grid, including fractional graph margins.
+        x0 = math.floor(bounds.left()*sx + 1e-7)
+        y0 = math.floor(bounds.top()*sy + 1e-7)
+        x1 = math.ceil(bounds.right()*sx - 1e-7)
+        y1 = math.ceil(bounds.bottom()*sy - 1e-7)
+        if x1 <= x0 or y1 <= y0:
+            return
+        layer = qt.QImage(x1-x0, y1-y0,
+                          qt.QImage.Format.Format_ARGB32_Premultiplied)
+        if layer.isNull():
+            raise RuntimeError('Could not allocate heatmap raster layer')
+        layer.fill(qt.Qt.GlobalColor.transparent)
+        layer.setDotsPerMeterX(round(dpix/0.0254))
+        layer.setDotsPerMeterY(round(dpiy/0.0254))
+        raster = qt.QPainter(layer)
+        try:
+            raster.setRenderHint(qt.QPainter.RenderHint.Antialiasing,
+                                 helper.rasterantialias)
+            raster.translate(-x0, -y0)
+            targetclip = qt.QRectF(clip.left()*sx, clip.top()*sy,
+                                  clip.width()*sx, clip.height()*sy)
+            raster.setClipRect(targetclip)
+            targetposn = [posn[0]*sx, posn[1]*sy, posn[2]*sx, posn[3]*sy]
+            # Reuse the color-mapped source: coordinate conversion and drawing
+            # happen at target DPI, but data processing only happens once.
+            self._drawImage(raster, axes, targetposn, targetclip, data, image)
+        finally:
+            raster.end()
+            # Axis coordinate caches must remain in the outer layout space.
+            for axis in axes:
+                axis.updateAxisLocation(posn)
+        painter.drawImage(qt.QRectF(x0/sx, y0/sy,
+                                   (x1-x0)/sx, (y1-y0)/sy), layer)
+
     def dataDraw(self, painter, axes, posn, clip):
         """Draw image."""
 
@@ -358,10 +407,12 @@ class Image(plotters.GenericPlotter):
         if s.hide or data is None or data.dimensions != 2:
             return
 
-        transimg = s.get('transparencyData').getData(d)
-        if transimg is not None:
-            transimg = transimg.data
+        self._drawImage(painter, axes, posn, clip, data)
 
+    def _drawImage(self, painter, axes, posn, clip, data, image=None):
+        """Draw heatmap geometry, optionally reusing already color-mapped data."""
+        s = self.settings
+        d = self.document
         rangex, rangey = data.getDataRanges()
         pltrangex = axes[0].dataToPlotterCoords(posn, N.array(rangex))
         pltrangey = axes[1].dataToPlotterCoords(posn, N.array(rangey))
@@ -371,25 +422,34 @@ class Image(plotters.GenericPlotter):
            abs(pltrangey[0]-pltrangey[1])<1e-2):
             return
 
-        # make QImage from data
-        cmap = d.evaluate.getColormap(s.colorMap, s.colorInvert)
-        datavaluerange = self.getDataValueRange(data)
-        image = utils.applyColorMap(
-            cmap,
-            s.colorScaling,
-            data.data,
-            datavaluerange[0], datavaluerange[1],
-            s.transparency, transimg=transimg,
-        )
+        if image is None:
+            transimg = s.get('transparencyData').getData(d)
+            if transimg is not None:
+                transimg = transimg.data
+            cmap = d.evaluate.getColormap(s.colorMap, s.colorInvert)
+            datavaluerange = self.getDataValueRange(data)
+            image = utils.applyColorMap(
+                cmap,
+                s.colorScaling,
+                data.data,
+                datavaluerange[0], datavaluerange[1],
+                s.transparency, transimg=transimg,
+            )
+        sourceimage = image
 
         drawmode = s.drawMode
+        helper = getattr(painter, 'helper', None)
+        rasterize = helper is not None and helper.rasterdpi is not None
 
         # if data are non linear, or axes are non linear in pixel
         # mode, switch to non linear drawing
         if not data.isLinearImage() or ((
                 not axes[0].isLinear() or not axes[1].isLinear()) and
                 s.mapping == 'pixels'):
-            self.drawNonlinearImage(painter, axes, posn, data, image)
+            if rasterize and drawmode not in ('default', 'rectangles'):
+                self._drawAtRasterDpi(painter, axes, posn, clip, data, sourceimage)
+            else:
+                self.drawNonlinearImage(painter, axes, posn, data, image)
             return
 
         # linearly spaced grid
@@ -400,6 +460,14 @@ class Image(plotters.GenericPlotter):
             # need to crop image
             pltrangex, pltrangey, image = cropLinearImageToBox(
                 image, pltrangex, pltrangey, posn)
+
+        # Preserve Veusz's vector-cell modes, including the default mode's
+        # threshold on the cropped data. Only raster output needs a DPI.
+        drawrects = drawmode == 'rectangles' or (drawmode == 'default' and (
+            image.width() < 30 or image.height() < 30))
+        if rasterize and not drawrects:
+            self._drawAtRasterDpi(painter, axes, posn, clip, data, sourceimage)
+            return
 
         # invert output drawing if axes go from positive->negative
         # we only translate the coordinate system if this is the case
@@ -421,9 +489,7 @@ class Image(plotters.GenericPlotter):
             xp, yp, abs(pltrangex[0]-pltrangex[1]),
             abs(pltrangey[0]-pltrangey[1]))
 
-        drawmode = s.drawMode
-        if drawmode == 'rectangles' or (drawmode =='default' and (
-                image.width()<30 or image.height()<30)):
+        if drawrects:
             # draw low res images as rectangles
             qtloops.plotImageAsRects(painter, imgposn, image)
 
