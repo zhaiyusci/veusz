@@ -24,7 +24,6 @@ import sys
 import os.path
 import traceback
 import io
-import re
 import numpy as N
 
 from .. import qtall as qt
@@ -319,17 +318,33 @@ def loadDocument(thedoc, filename, mode='vsz',
     thedoc.clearHistory()
 
 def removeBOMs(script):
+    r"""Remove literal \ufeff escapes preceded by an odd backslash count.
+
+    Keep paired backslashes, escaped literal text (e.g. r'\\ufeff'), and
+    actual U+FEFF characters unchanged. This operates on script source,
+    before Python interprets string literals, not on decoded string values.
     """
-    Remove BOMs in the script unless they are escaped.
-    For example:
-        "AA\ufeffAA" -> "AAAA"
-        'C:\\ufeff\\a.csv' -> 'C:\\ufeff\\a.csv'
-    """
-    pattern = r'(.*?)(\\+)ufeff(.*?)'
-    def replacer(m):
-        bs = m.group(2)
-        if len(bs) % 2 == 0:
-            return m.group(0)
-        else:
-            return f"{m.group(1)}{bs[1:]}{m.group(3)}"
-    return re.sub(pattern, replacer, script)
+    parts = []
+    start = 0
+    search = 0
+    while True:
+        pos = script.find('ufeff', search)
+        if pos < 0:
+            break
+
+        # Each search advances past the needle, and backslash runs cannot
+        # overlap. Thus both the searches and this backward scan total O(n).
+        slashstart = pos
+        while slashstart > search and script[slashstart - 1] == '\\':
+            slashstart -= 1
+        search = pos + 5
+        if (pos - slashstart) % 2:
+            # Remove just the final backslash and 'ufeff', retaining pairs.
+            # Slice only disjoint spans and join once to avoid quadratic copies.
+            parts.append(script[start:pos - 1])
+            start = search
+
+    if not parts:
+        return script
+    parts.append(script[start:])
+    return ''.join(parts)

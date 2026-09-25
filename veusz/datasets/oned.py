@@ -78,9 +78,12 @@ class Dataset1DBase(DatasetConcreteBase):
         return (self.serr is not None or self.nerr is not None or
                 self.perr is not None)
 
-    def getPointRanges(self):
-        '''Get range of coordinates for each point in the form
-        (minima, maxima).'''
+    def getPointRanges(self, finite=True):
+        '''Get range of coordinates in the form (minima, maxima).
+
+        By default each array is independently filtered to finite values.
+        finite=False preserves row alignment, including nonfinite endpoints.
+        '''
 
         minvals = self.data.copy()
         maxvals = self.data.copy()
@@ -95,6 +98,8 @@ class Dataset1DBase(DatasetConcreteBase):
         if self.perr is not None:
             maxvals += self.perr
 
+        if not finite:
+            return minvals, maxvals
         return (
             minvals[N.isfinite(minvals)],
             maxvals[N.isfinite(maxvals)]
@@ -230,7 +235,8 @@ class Dataset(Dataset1DBase):
             descriptor += ',-'
 
         fileobj.write( "ImportString(%s,'''\n" % repr(descriptor) )
-        fileobj.write( self.datasetAsText(fmt='%e', join=' ') )
+        # 17 significant digits round-trip float64 data and error columns.
+        fileobj.write( self.datasetAsText(fmt='%.17g', join=' ') )
         fileobj.write( "''')\n" )
 
     def saveDataDumpToHDF5(self, group, name):

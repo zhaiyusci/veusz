@@ -23,7 +23,7 @@
 import numpy as N
 
 from .base import DatasetBase
-from .oned import Dataset
+from .oned import Dataset, Dataset1DBase
 from .twod import Dataset2D
 from .text import DatasetText
 
@@ -50,13 +50,17 @@ def valsToDataset(vals, datatype, dimensions):
 
     raise RuntimeError('Invalid array')
 
-def generateValidDatasetParts(datasets, breakds=True):
+def generateValidDatasetParts(datasets, breakds=True, ignoreerrors=False):
     """Generator to return array of valid parts of datasets.
 
     if breakds is True:
       Yields new datasets between rows which are invalid
     else:
       Yields single, filtered dataset
+
+    ignoreerrors ignores error-column validity for numeric 1D datasets only;
+    the returned datasets retain their original error values. The default
+    preserves the historical combined data/error validity policy.
     """
 
     # get lengths of datasets and combine invalid parts
@@ -64,7 +68,10 @@ def generateValidDatasetParts(datasets, breakds=True):
     invalid = None
     for ds in datasets:
         if isinstance(ds, DatasetBase) and not ds.empty():
-            thisinvalid = ds.invalidDataPoints()
+            if ignoreerrors and isinstance(ds, Dataset1DBase):
+                thisinvalid = ~N.isfinite(ds.data)
+            else:
+                thisinvalid = ds.invalidDataPoints()
             dslen = thisinvalid.shape[0]
             if minlen is None:
                 minlen = dslen
@@ -86,7 +93,11 @@ def generateValidDatasetParts(datasets, breakds=True):
 
         # no bad points: optimisation
         if not indexes:
-            yield datasets
+            if ignoreerrors:
+                yield [ds[:minlen] if ds is not None else None
+                       for ds in datasets]
+            else:
+                yield datasets
             return
 
         # add on shortest length of datasets
@@ -111,7 +122,11 @@ def generateValidDatasetParts(datasets, breakds=True):
         # values are masked out
 
         if not N.any(invalid):
-            yield datasets
+            if ignoreerrors:
+                yield [ds[:minlen] if ds is not None else None
+                       for ds in datasets]
+            else:
+                yield datasets
             return
 
         valid = N.logical_not(invalid)

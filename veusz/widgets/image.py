@@ -494,16 +494,15 @@ class Image(plotters.GenericPlotter):
             qtloops.plotImageAsRects(painter, imgposn, image)
 
         else:
-            # upscale if requested
+            # Mirroring is handled by the painter transform above. QImage
+            # scaling needs positive dimensions even on reversed axes.
             if drawmode == 'resample-pixels':
                 image = image.scaled(
-                    int(pltrangex[1]-pltrangex[0]),
-                    int(pltrangey[0]-pltrangey[1]),
+                    int(abs(xw)), int(abs(yw)),
                     qt.Qt.AspectRatioMode.IgnoreAspectRatio, qt.Qt.TransformationMode.FastTransformation)
             elif drawmode == 'resample-smooth':
                 image = image.scaled(
-                    int(pltrangex[1]-pltrangex[0]),
-                    int(pltrangey[0]-pltrangey[1]),
+                    int(abs(xw)), int(abs(yw)),
                     qt.Qt.AspectRatioMode.IgnoreAspectRatio, qt.Qt.TransformationMode.SmoothTransformation)
 
             painter.drawImage(imgposn, image)

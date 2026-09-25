@@ -422,9 +422,6 @@ class Key(widget.Widget):
             # default order
             widgets = [c for c in self.parent.children]
 
-        if s.orderswap:
-            widgets = widgets[::-1]
-
         # which widgets to exclude
         exclude = { x.strip() for x in s.exclude.split(',') }
 
@@ -450,6 +447,10 @@ class Key(widget.Widget):
 
                 totallines += lines
                 entries.append( (c, i, lines) )
+
+        # Reverse visible entries, including multiple keys from one widget.
+        if s.orderswap:
+            entries.reverse()
 
         # layout the box
         layout, (numrows, numcols) = self._layout(entries, totallines)

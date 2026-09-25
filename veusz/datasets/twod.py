@@ -254,30 +254,31 @@ class Dataset2D(Dataset2DBase):
     def saveDataDumpToText(self, fileobj, name):
         """Write the 2d dataset to the file given."""
 
+        # Preserve float64 precision in both coordinates and data.
         fileobj.write("ImportString2D(%s, '''\n" % repr(name))
         if self.xcent is not None:
             fileobj.write(
                 "xcent %s\n" %
-                " ".join(("%e" % v for v in self.xcent)) )
+                " ".join(("%.17g" % v for v in self.xcent)) )
         elif self.xedge is not None:
             fileobj.write(
                 "xedge %s\n" %
-                " ".join(("%e" % v for v in self.xedge)) )
+                " ".join(("%.17g" % v for v in self.xedge)) )
         else:
-            fileobj.write("xrange %e %e\n" % tuple(self.xrange))
+            fileobj.write("xrange %.17g %.17g\n" % tuple(self.xrange))
 
         if self.ycent is not None:
             fileobj.write(
                 "ycent %s\n" %
-                " ".join(("%e" % v for v in self.ycent)) )
+                " ".join(("%.17g" % v for v in self.ycent)) )
         elif self.yedge is not None:
             fileobj.write(
                 "yedge %s\n" %
-                " ".join(("%e" % v for v in self.yedge)) )
+                " ".join(("%.17g" % v for v in self.yedge)) )
         else:
-            fileobj.write("yrange %e %e\n" % tuple(self.yrange))
+            fileobj.write("yrange %.17g %.17g\n" % tuple(self.yrange))
 
-        fileobj.write(self.datasetAsText(fmt='%e', join=' '))
+        fileobj.write(self.datasetAsText(fmt='%.17g', join=' '))
         fileobj.write("''')\n")
 
     def saveDataDumpToHDF5(self, group, name):

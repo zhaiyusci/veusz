@@ -92,7 +92,8 @@ class DatasetND(DatasetNDBase):
             # here so we record this unambiguously
             shape = ' '.join((str(d) for d in self.data.shape))
             fileobj.write("shape %s\n" % shape)
-        fileobj.write(self.datasetAsText(fmt='%e', join=' '))
+        # Preserve float64 values when reloading the document.
+        fileobj.write(self.datasetAsText(fmt='%.17g', join=' '))
         fileobj.write("''')\n")
 
     def saveDataDumpToHDF5(self, group, name):

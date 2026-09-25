@@ -236,10 +236,11 @@ class BarPlotter(GenericPlotter):
         axis = axes[ishorz]
         posns = axis.dataToPlotterCoords(posn, p)
         if len(posns) <= 1:
+            # A single group spans the position axis, not the value axis.
             if ishorz:
-                maxwidth = posn[2]-posn[0]
-            else:
                 maxwidth = posn[3]-posn[1]
+            else:
+                maxwidth = posn[2]-posn[0]
         else:
             maxwidth = N.nanmin(N.abs(posns[1:]-posns[:-1]))
 
@@ -375,8 +376,11 @@ class BarPlotter(GenericPlotter):
                 axes, widgetposn
             )
 
-    def calcStackedPoints(self, dsvals, axis, widgetposn):
-        """Calculate stacked dataset coordinates for plotting."""
+    def calcStackedPoints(self, dsvals, axis, widgetposn, withstarts=False):
+        """Calculate stacked endpoints, optionally including segment starts.
+
+        Starts and ends are transformed separately, including on log axes.
+        """
 
         # keep track of last most negative or most positive values in bars
         poslen = len(dsvals[0]['data'])
@@ -386,11 +390,15 @@ class BarPlotter(GenericPlotter):
         # returned stacked values and coordinates
         stackedvals = []
         stackedcoords = []
+        startcoords = []
 
         for dsnum, data in enumerate(dsvals):
             # add on value to last value in correct direction
             data = data['data']
-            new = N.where(data < 0., lastneg+data, lastpos+data)
+            start = N.where(data < 0., lastneg, lastpos)
+            new = start + data
+            if withstarts:
+                startcoords.append(axis.dataToPlotterCoords(widgetposn, start))
 
             # work out maximum extents for next time
             lastneg = N.min( N.vstack((lastneg, new)), axis=0 )
@@ -402,6 +410,8 @@ class BarPlotter(GenericPlotter):
             stackedvals.append(new)
             stackedcoords.append(newplt)
 
+        if withstarts:
+            return stackedvals, stackedcoords, startcoords
         return stackedvals, stackedcoords
 
     def barDrawStacked(self, painter, posns, maxwidth, dsvals,
@@ -417,25 +427,24 @@ class BarPlotter(GenericPlotter):
         ishorz = s.direction == 'horizontal'
         vaxis = axes[not ishorz]
 
-        # compute stacked coordinates
-        stackedvals, stackedcoords = self.calcStackedPoints(
-            dsvals, vaxis, widgetposn)
-        # coordinates of origin
-        zerocoords = vaxis.dataToPlotterCoords(widgetposn, N.zeros(posns.shape))
+        # Fill only each segment, not the cumulative bar back to zero:
+        # otherwise translucent fills blend with unrelated stack layers.
+        stackedvals, stackedcoords, startcoords = self.calcStackedPoints(
+            dsvals, vaxis, widgetposn, withstarts=True)
 
         # positions of bar perpendicular to bar direction
         posns1 = posns - barwidth*0.5
         posns2 = posns1 + barwidth
 
-        # draw bars (reverse order, so edges are plotted correctly)
-        for dsnum, coords in zip(
-                range(len(stackedcoords)-1, -1, -1),
-                stackedcoords[::-1]):
-            # we iterate over each of these coordinates
+        # Keep reverse order so the lower segment's border takes precedence
+        # at shared edges. Zero-length segments retain their endpoint outline.
+        for dsnum in range(len(stackedcoords)-1, -1, -1):
+            coords = stackedcoords[dsnum]
+            starts = startcoords[dsnum]
             if ishorz:
-                p = (zerocoords, posns1, coords, posns2)
+                p = (starts, posns1, coords, posns2)
             else:
-                p = (posns1, zerocoords, posns2, coords)
+                p = (posns1, starts, posns2, coords)
             self.plotBars(painter, s, dsnum, clip, p)
 
         # draw error bars

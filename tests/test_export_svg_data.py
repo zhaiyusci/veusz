@@ -102,9 +102,8 @@ class HeatmapDataSemanticsTest(unittest.TestCase):
                                  transimg=np.zeros((2,2)))
         self.assertEqual(image.pixelColor(0,0).alpha(),0)
 
-    @unittest.expectedFailure
-    def test_existing_reversed_resampling_is_nonempty(self):
-        """Known pre-existing signed QImage.scaled dimensions on reversed axes."""
+    def test_reversed_resampling_is_nonempty(self):
+        """Reversed axes must not pass negative QImage.scaled dimensions."""
         doc=make_data_document(dict(name='reverse',mode='resample-pixels',reverse='x'))
         with tempfile.TemporaryDirectory() as folder:
             _,png=export_pair(doc,folder,96)

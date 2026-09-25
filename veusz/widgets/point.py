@@ -47,12 +47,15 @@ class ErrorBarDraw:
         self.fillbelow = fillbelow
         self.markersize = markersize
 
-    def plot(self, painter, xmin, xmax, ymin, ymax, xplt, yplt, clip):
+    def plot(self, painter, xmin, xmax, ymin, ymax, xplt, yplt, clip,
+             functions=None):
         pen = self.linestyle.makeQPenWHide(painter)
         pen.setCapStyle(qt.Qt.PenCapStyle.FlatCap)
 
         painter.setPen(pen)
-        for function in self.error_functions[self.style]:
+        if functions is None:
+            functions = self.error_functions[self.style]
+        for function in functions:
             function(self, painter, xmin, xmax, ymin, ymax, xplt, yplt, clip)
 
     def errorsBar(self, painter, xmin, xmax, ymin, ymax, xplt, yplt, clip):
@@ -391,6 +394,18 @@ class PointPlotter(GenericPlotter):
                 _('NaN values cause data in their locations to be ignored'),
             )), 9 )
 
+        s.add(setting.Choice(
+            'missingErrors', ('hide-point', 'hide-error'), 'hide-point',
+            descr=_('Nonfinite (NaN or infinite) errors: hide the point (legacy), '
+                    'or keep finite XY points and connecting lines, omitting '
+                    'the entire incomplete error pair on that axis. Error bands '
+                    'break at missing errors; missing errors are not zero. '
+                    'Centred steps use point midpoints in segments with '
+                    'incomplete errors.'),
+            usertext=_('Missing errors'),
+            descriptions=(_('Hide point (legacy)'),
+                          _('Show point, omit incomplete errors'))), 10)
+
         # formatting
         s.add( setting.Int(
             'errorthin', 1,
@@ -497,6 +512,12 @@ class PointPlotter(GenericPlotter):
         if style == 'none':
             return
 
+        if s.missingErrors == 'hide-error':
+            self._plotFiniteErrors(
+                posn, painter, xplotter, yplotter, axes,
+                xdata, ydata, cliprect)
+            return
+
         # optional thinning of error bars plotted
         thin = s.errorthin
 
@@ -535,6 +556,56 @@ class PointPlotter(GenericPlotter):
             s.errorStyle, s.ErrorBarLine, s.FillAbove, s.FillBelow, markersize)
         ebp.plot(painter, xmin, xmax, ymin, ymax, xplotter, yplotter, cliprect)
 
+    def _plotFiniteErrors(self, posn, painter, xplotter, yplotter,
+                          axes, xdata, ydata, cliprect):
+        """Draw only complete error pairs, never passing nonfinite geometry.
+
+        Bar/band axes are independent; boxes, diamonds and curves require
+        both axes. Split before thinning so bands cannot bridge missing errors.
+        """
+        s = self.settings
+        endpoints = []
+        masks = []
+        for ds, axis in zip((xdata, ydata), axes):
+            if ds.hasErrors():
+                lo, hi = ds.getPointRanges(finite=False)
+                valid = ~ds.invalidDataPoints() & N.isfinite(lo) & N.isfinite(hi)
+                lo = axis.dataToPlotterCoords(posn, lo)
+                hi = axis.dataToPlotterCoords(posn, hi)
+                valid &= N.isfinite(lo) & N.isfinite(hi)
+                endpoints.extend((lo, hi))
+                masks.append(valid)
+            else:
+                endpoints.extend((None, None))
+                masks.append(N.zeros(len(ds.data), dtype=bool))
+        ebp = ErrorBarDraw(
+            s.errorStyle, s.ErrorBarLine, s.FillAbove, s.FillBelow,
+            s.get('markerSize').convert(painter))
+        coupled = (
+            ErrorBarDraw.errorsBox, ErrorBarDraw.errorsBoxFilled,
+            ErrorBarDraw.errorsDiamond, ErrorBarDraw.errorsDiamondFilled,
+            ErrorBarDraw.errorsCurve, ErrorBarDraw.errorsCurveFilled)
+        # Preserve the style's function order, including composite styles:
+        # bars use independent pairs, enclosing shapes need both pairs.
+        for function in ebp.error_functions[s.errorStyle]:
+            if function in coupled or N.array_equal(*masks):
+                groups = [(masks[0] & masks[1], endpoints)]
+            else:
+                groups = [(masks[1], [None, None] + endpoints[2:]),
+                          (masks[0], endpoints[:2] + [None, None])]
+            for valid, ends in groups:
+                valid = valid & N.isfinite(xplotter) & N.isfinite(yplotter)
+                boundaries = N.flatnonzero(N.diff(N.r_[False, valid, False]))
+                for start, stop in boundaries.reshape(-1, 2):
+                    # Keep thinning aligned with the data segment, not each run.
+                    start += (-start) % s.errorthin
+                    if start >= stop:
+                        continue
+                    sl = slice(start, stop, s.errorthin)
+                    vals = [None if v is None else v[sl] for v in ends]
+                    ebp.plot(painter, *vals, xplotter[sl], yplotter[sl], cliprect,
+                             functions=(function,))
+
     def affectsAxisRange(self):
         """This widget provides range information about these axes."""
         s = self.settings
@@ -547,7 +618,20 @@ class PointPlotter(GenericPlotter):
         data = dsetn.getData(self.document)
 
         if data:
-            data.updateRangeAuto(axrange, axis.settings.log)
+            if self.settings.missingErrors == 'hide-error':
+                # Include central values independently of missing errors, but
+                # only complete, finite error pairs. Never range over infinity.
+                lo, hi = data.getPointRanges(finite=False)
+                valid = ~data.invalidDataPoints() & N.isfinite(lo) & N.isfinite(hi)
+                for values in (data.data, lo[valid], hi[valid]):
+                    values = values[N.isfinite(values)]
+                    if axis.settings.log:
+                        values = values[values > 0]
+                    if len(values):
+                        axrange[0] = min(axrange[0], values.min())
+                        axrange[1] = max(axrange[1], values.max())
+            else:
+                data.updateRangeAuto(axrange, axis.settings.log)
         elif dsetn.isEmpty():
             # no valid dataset.
             # check if there a valid dataset for the other axis.
@@ -593,7 +677,10 @@ class PointPlotter(GenericPlotter):
         elif steps[:6] == 'centre':
             axes = self.parent.getAxes( (s.xAxis, s.yAxis) )
 
-            if xdata.hasErrors():
+            if xdata.hasErrors() and not (
+                    s.missingErrors == 'hide-error' and
+                    (N.any(xdata.invalidDataPoints()) or
+                     not N.isfinite(xdata.getPointRanges(finite=False)).all())):
                 # Special case if error bars on x points:
                 # here we use the error bars to define the steps
                 xmin, xmax = xdata.getPointRanges()
@@ -620,7 +707,10 @@ class PointPlotter(GenericPlotter):
         elif steps[:7] == 'vcentre':
             axes = self.parent.getAxes( (s.xAxis, s.yAxis) )
 
-            if ydata.hasErrors():
+            if ydata.hasErrors() and not (
+                    s.missingErrors == 'hide-error' and
+                    (N.any(ydata.invalidDataPoints()) or
+                     not N.isfinite(ydata.getPointRanges(finite=False)).all())):
                 # Special case if error bars on y points:
                 # here we use the error bars to define the steps
                 ymin, ymax = ydata.getPointRanges()
@@ -914,7 +1004,7 @@ class PointPlotter(GenericPlotter):
         for xvals, yvals, tvals, ptvals, cvals in (
             datasets.generateValidDatasetParts(
                 [xv, yv, text, scalepoints, colorpoints],
-                breakds=nanbreak)):
+                breakds=nanbreak, ignoreerrors=s.missingErrors == 'hide-error')):
 
             #print "Calculating coordinates"
             # calc plotter coords of x and y points
