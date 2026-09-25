@@ -52,9 +52,11 @@ def bconv(s):
         return s.decode('utf-8')
     return s
 
-def _importcaller(interface, name, callbackimporterror):
-    """Wrap an import statement to check for IOError."""
+def _importcaller(interface, name, callbackimporterror, callbackreplaced=None):
+    """Wrap imports, reporting a changed filename only after success."""
     def wrapped(*args, **argsk):
+        originalfilename = None
+        replaced = False
         while True:
             try:
                 getattr(interface, name)(*args, **argsk)
@@ -63,6 +65,8 @@ def _importcaller(interface, name, callbackimporterror):
                 fnameidx = interface.import_filenamearg[name]
                 assert fnameidx >= 0
                 filename = args[fnameidx]
+                if originalfilename is None:
+                    originalfilename = filename
                 raiseerror = True
                 if callbackimporterror:
                     # used by mainwindow to show dialog and get new filename
@@ -77,6 +81,7 @@ def _importcaller(interface, name, callbackimporterror):
                         # put new filename into function argument list
                         args = list(args)
                         args[fnameidx] = fname
+                        replaced = fname != originalfilename
                         raiseerror = False
                 if raiseerror:
                     # send error message back to UI
@@ -84,7 +89,9 @@ def _importcaller(interface, name, callbackimporterror):
                         _("Error reading file '%s':\n\n%s") %
                         (filename, errmsg))
             else:
-                # imported ok
+                # Failed attempts followed by Ignore are not successful repairs.
+                if replaced and callbackreplaced is not None:
+                    callbackreplaced()
                 break
     return wrapped
 
@@ -103,6 +110,7 @@ def executeScript(thedoc, filename, script,
     callbackimporterror(filename, error): should be set to function to return new filename in case of import error, or False if none
 
     User should wipe docment before calling this.
+    Returns whether an import succeeded using a replacement filename.
     """
 
     def genexception(exc):
@@ -148,9 +156,16 @@ def executeScript(thedoc, filename, script,
     for name in interface.unsafe_commands:
         env[name] = _unsafecaller(getattr(interface, name))
 
+    # Loading normally leaves a clean document, but repaired imports need saving.
+    importsreplaced = False
+    def importreplaced():
+        nonlocal importsreplaced
+        importsreplaced = True
+
     # override import commands with wrapper
     for name in interface.import_commands:
-        env[name] = _importcaller(interface, name, callbackimporterror)
+        env[name] = _importcaller(
+            interface, name, callbackimporterror, importreplaced)
 
     # get ready for loading document
     env['__file__'] = filename
@@ -165,6 +180,8 @@ def executeScript(thedoc, filename, script,
             raise
         except Exception as e:
             raise genexception(e)
+
+    return importsreplaced
 
 def loadHDF5Dataset1D(datagrp):
     args = {}
@@ -261,7 +278,7 @@ def loadHDF5Doc(thedoc, filename,
         # Remove embedded BOM characters
         script = removeBOMs(script)
         
-        executeScript(
+        importsreplaced = executeScript(
             thedoc, filename, script,
             callbackunsafe=callbackunsafe,
             callbackimporterror=callbackimporterror)
@@ -272,6 +289,8 @@ def loadHDF5Doc(thedoc, filename,
         tagHDF5Datasets(thedoc, hdffile)
 
         hdffile.close()
+
+    return importsreplaced
 
 def loadDocument(thedoc, filename, mode='vsz',
                  callbackunsafe=None,
@@ -300,13 +319,13 @@ def loadDocument(thedoc, filename, mode='vsz',
         thedoc.wipe()
         thedoc.filename = filename
         thedoc.evaluate.updateSecurityFromPath()
-        executeScript(
+        importsreplaced = executeScript(
             thedoc, filename, script,
             callbackunsafe=callbackunsafe,
             callbackimporterror=callbackimporterror)
 
     elif mode == 'hdf5':
-        loadHDF5Doc(
+        importsreplaced = loadHDF5Doc(
             thedoc, filename,
             callbackunsafe=callbackunsafe,
             callbackimporterror=callbackimporterror)
@@ -314,7 +333,7 @@ def loadDocument(thedoc, filename, mode='vsz',
     else:
         raise RuntimeError('Invalid load mode')
 
-    thedoc.setModified(False)
+    thedoc.setModified(importsreplaced)
     thedoc.clearHistory()
 
 def removeBOMs(script):

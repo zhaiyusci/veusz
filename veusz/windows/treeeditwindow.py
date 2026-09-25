@@ -41,6 +41,10 @@ class SettingsProxy:
     """Object to handle communication between widget/settings
     or sets of widgets/settings."""
 
+    # False for temporary editors whose settings are not addressable in the
+    # document tree. Local changes must still go through the proxy.
+    supportsDocumentPathActions = True
+
     def childProxyList(self):
         """Return a list settings and setting variables proxified."""
 
@@ -1602,8 +1606,16 @@ class SettingLabel(qt.QWidget):
         self.updateHighlight()
         return qt.QWidget.focusOutEvent(self, event)
 
+    def _requireDocumentPathActions(self):
+        """Reject operations which cannot address temporary editor settings."""
+        if not self.setnsproxy.supportsDocumentPathActions:
+            raise ValueError(
+                'This settings editor does not support document-path actions')
+
     def addCopyToWidgets(self, menu):
         """Make a menu with list of other widgets in it."""
+        if not self.setnsproxy.supportsDocumentPathActions:
+            return
 
         def getWidgetsOfType(widget, widgettype, widgets=[]):
             """Recursively build up a list of widgets of the type given."""
@@ -1633,6 +1645,7 @@ class SettingLabel(qt.QWidget):
         def modifyfn(widget):
             def modify():
                 """Modify the setting for the widget given."""
+                self._requireDocumentPathActions()
                 wpath = widget + setpath
                 self.document.applyOperation(
                     document.OperationSettingSet(wpath, self.setting.get()))
@@ -1667,8 +1680,9 @@ class SettingLabel(qt.QWidget):
             _('Reset to default'),
             self.actionResetDefault)
 
-        if self.setting.path[:12] != '/StyleSheet/':
-            # settings not relevant for style sheet items
+        if (self.setnsproxy.supportsDocumentPathActions and
+                self.setting.path[:12] != '/StyleSheet/'):
+            # Only real document settings support copying or default styles.
 
             copyto = popup.addMenu(_('Copy to'))
             copyto.addAction(
@@ -1687,8 +1701,9 @@ class SettingLabel(qt.QWidget):
                 _('Use as default style'),
                 self.actionSetStyleSheet)
 
-        # special actions for references
-        if self.setting.isReference():
+        # Unlink also uses a document-path operation, not a local edit.
+        if (self.setnsproxy.supportsDocumentPathActions and
+                self.setting.isReference()):
             popup.addSeparator()
             popup.addAction(
                 _('Unlink setting'),
@@ -1706,11 +1721,13 @@ class SettingLabel(qt.QWidget):
 
     def actionCopyTypedWidgets(self):
         """Copy setting to widgets of same type."""
+        self._requireDocumentPathActions()
         self.document.applyOperation(
             document.OperationSettingPropagate(self.setting) )
 
     def actionCopyTypedSiblings(self):
         """Copy setting to siblings of the same type."""
+        self._requireDocumentPathActions()
         self.document.applyOperation(
             document.OperationSettingPropagate(
                 self.setting,
@@ -1719,6 +1736,7 @@ class SettingLabel(qt.QWidget):
 
     def actionCopyTypedNamedWidgets(self):
         """Copy setting to widgets with the same name and type."""
+        self._requireDocumentPathActions()
         self.document.applyOperation(
             document.OperationSettingPropagate(
                 self.setting,
@@ -1727,11 +1745,13 @@ class SettingLabel(qt.QWidget):
 
     def actionUnlinkSetting(self):
         """Unlink the setting if it is a reference."""
+        self._requireDocumentPathActions()
         self.document.applyOperation(
             document.OperationSettingSet(self.setting, self.setting.get()) )
 
     def actionSetStyleSheet(self):
         """Use the setting as the default in the stylesheet."""
+        self._requireDocumentPathActions()
 
         # get name of stylesheet setting
         sslink = self.setting.getStylesheetLink()

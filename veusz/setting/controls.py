@@ -1461,7 +1461,16 @@ class _FillBox(qt.QScrollArea):
 
         fbox = self
         class DirectSetProxy(SettingsProxySingle):
-            """Class to intercept changes of settings from UI."""
+            """Edit a temporary brush, serializing changes to the real FillSet."""
+
+            # Reparenting allows color resolution, but does not register the
+            # temporary brush in the document or define per-row copy semantics.
+            supportsDocumentPathActions = False
+
+            def resetToDefault(self, name):
+                setting = self.settings.get(name)
+                self.onSettingChanged(None, setting, setting.default)
+
             def onSettingChanged(self, control, setting, val):
                 # set value in setting
                 setting.val = val

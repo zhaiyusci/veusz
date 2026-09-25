@@ -31,22 +31,165 @@ from .text import DatasetText
 
 from .. import utils
 
-# split expression on python operators or quoted `DATASET`
+# Retain the Veusz operator/backtick grammar outside Python literal text.
 dataexpr_split_re = re.compile(r'(`.*?`|[\.+\-*/\(\)\[\],<>=!|%^~& ])')
+# Include prefixes in protected spans, and match triple quotes first.
+dataexpr_string_start_re = re.compile(
+    r"(?i:br|rb|fr|rf|tr|rt|r|u|b|f|t)?('''|\"\"\"|'|\")")
 # identify whether string is a quoted identifier
 dataexpr_quote_re = re.compile(r'^`.*`$')
+dataexpr_comment_end_re = re.compile(r'[\r\n]')
 dataexpr_columns = {'data':True, 'serr':True, 'perr':True, 'nerr':True}
 
-def substituteDatasets(datasets, expression, thispart):
-    """Substitute the names of datasets with calls to a function which will
-    evaluate them.
+def _literalSpans(expression, datasets):
+    """Find literal text without parsing or executing Veusz/Python expressions.
 
-    Returns (new expression, list of substituted datasets)
+    F-string (and template-string) fields remain expressions, including nested
+    fields in format specs. This deliberately does not resolve Python scopes.
+    The scanner is independent of version-specific Python tokenize f-string
+    tokens; malformed input is still diagnosed by the checked compiler.
     """
+    spans = []
+    length = len(expression)
 
-    # split apart the expression to look for dataset names
+    # The legacy grammar also accepts bare names such as a#b. Honor those
+    # known dataset tokens; all other hashes introduce Python comments.
+    datasethashes = set()
+    offset = 0
+    for bit in dataexpr_split_re.split(expression):
+        if '#' in bit:
+            name, sep, suffix = bit.rpartition('_')
+            name = name if sep and suffix in dataexpr_columns else bit
+            if name in datasets:
+                datasethashes.update(
+                    offset+i for i, char in enumerate(bit) if char == '#')
+        offset += len(bit)
+
+    def escaped(pos, raw, formatted=True):
+        # Braces are not backslash-escaped in interpolation text. A nonraw
+        # named Unicode escape is the exception: its braces belong to the name.
+        # Consume other escape pairs together so \\N after an escaped backslash
+        # cannot be mistaken for a named escape on the following iteration.
+        if formatted and expression[pos+1:pos+2] in ('{', '}'):
+            return pos+1
+        if formatted and not raw and expression.startswith('\\N{', pos):
+            end = expression.find('}', pos+3)
+            return length if end < 0 else end+1
+        return min(pos+2, length)
+
+    def string(pos, match):
+        start = literalstart = pos
+        quote = match.group(1)
+        prefix = expression[start:match.start(1)].lower()
+        formatted = 'f' in prefix or 't' in prefix
+        pos = match.end()
+        while pos < length:
+            if expression.startswith(quote, pos):
+                pos += len(quote)
+                spans.append((literalstart, pos))
+                return pos
+            char = expression[pos]
+            if char == '\\':
+                pos = escaped(pos, 'r' in prefix, formatted)
+            elif formatted and expression[pos:pos+2] in ('{{', '}}'):
+                pos += 2
+            elif formatted and char == '{':
+                spans.append((literalstart, pos+1))
+                pos = field(pos+1, 'r' in prefix)
+                literalstart = pos
+            else:
+                pos += 1
+        spans.append((literalstart, length))
+        return length
+
+    def field(pos, raw):
+        pos = code(pos, infield=True)
+        literalstart = pos
+        if expression[pos:pos+1] == '!':
+            # A conversion is literal syntax, not a dataset reference.
+            pos += 1
+            while pos < length and expression[pos] not in ':}':
+                pos += 1
+        if expression[pos:pos+1] == ':':
+            # Format spec text is literal except for nested replacement fields.
+            pos += 1
+            while pos < length and expression[pos] != '}':
+                if expression[pos] == '\\':
+                    pos = escaped(pos, raw)
+                elif expression[pos] == '{':
+                    spans.append((literalstart, pos+1))
+                    pos = field(pos+1, raw)
+                    literalstart = pos
+                else:
+                    pos += 1
+        if expression[pos:pos+1] == '}':
+            pos += 1
+        spans.append((literalstart, pos))
+        return pos
+
+    def code(pos, infield=False):
+        brackets = []
+        while pos < length:
+            char = expression[pos]
+            if char == '`':
+                # Veusz names may contain Python quotes or brackets.
+                end = expression.find('`', pos+1)
+                pos = length if end < 0 else end+1
+                continue
+            match = dataexpr_string_start_re.match(expression, pos)
+            if match:
+                pos = string(pos, match)
+                continue
+            if char == '#' and pos not in datasethashes:
+                # One search stops at either newline; separate finds can
+                # repeatedly scan the whole remaining text for an absent kind.
+                newline = dataexpr_comment_end_re.search(expression, pos+1)
+                end = newline.start() if newline else length
+                spans.append((pos, end))
+                pos = end
+                continue
+            if infield and not brackets and (
+                    char in ':}' or
+                    (char == '!' and expression[pos:pos+2] != '!=')):
+                return pos
+            if char in '([{':
+                brackets.append(char)
+            elif char in ')]}' and brackets:
+                brackets.pop()
+            pos += 1
+        return pos
+
+    try:
+        code(0)
+    except RecursionError:
+        # Leave excessive nesting for the checked compiler to reject too.
+        return [(0, length)]
+    return spans
+
+
+def substituteDatasets(datasets, expression, thispart):
+    """Substitute dataset references, leaving Python literal text unchanged.
+
+    Returns (new expression, list of substituted datasets).
+    """
+    bits = []
+    dslist = []
+    pos = 0
+    for start, end in _literalSpans(expression, datasets):
+        text, refs = _substituteDatasetsInCode(
+            datasets, expression[pos:start], thispart)
+        bits.extend((text, expression[start:end]))
+        dslist.extend(refs)
+        pos = end
+    text, refs = _substituteDatasetsInCode(datasets, expression[pos:], thispart)
+    bits.append(text)
+    dslist.extend(refs)
+    return ''.join(bits), dslist
+
+
+def _substituteDatasetsInCode(datasets, expression, thispart):
+    """Apply the existing dataset-name/error-column grammar to code only."""
     bits = dataexpr_split_re.split(expression)
-
     dslist = []
     for i, bit in enumerate(bits):
         # test whether there's an _data, _serr or such at the end of the name
@@ -199,10 +342,12 @@ def evalDatasetExpression(doc, origexpr, datatype='numeric',
             return Dataset2D(d.data)
 
     if utils.id_re.match(origexpr):
-        # if name is a python identifier, then it has to be a dataset
-        # name. As it wasn't there, just return with nothing rather
-        # than print error message.
-        return None
+        # Prefer datasets, including rejecting an existing dataset of the wrong
+        # type/dimension. Otherwise allow known context names (e.g. constants)
+        # through the normal checked evaluation and result validation below.
+        # Unknown bare names remain silent, as for a missing dataset.
+        if d is not None or origexpr not in doc.evaluate.context:
+            return None
 
     # replace dataset names by calls to _DS_(name,part)
     expr, subdatasets = substituteDatasets(doc.data, origexpr, part)
