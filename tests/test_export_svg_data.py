@@ -51,7 +51,8 @@ class HeatmapDataSemanticsTest(unittest.TestCase):
         selected=('scale-log','scale-sqrt','range-reversed','alpha-map',
                   'mask-with-global-alpha','mask-with-nan','dark-background',
                   'overlapping','fractional','grid-centers','values-nan',
-                  'values-checker','values-impulses')
+                  'values-checker','values-impulses','mask-gradient','mask-binary',
+                  'mask-zero','mask-out-of-range','mask-mismatched')
         cases=[c for c in data_cases() if any(c['name']==s+'-'+c['mode'] for s in selected)]
         with tempfile.TemporaryDirectory() as folder:
             for case in cases:
@@ -68,8 +69,14 @@ class HeatmapDataSemanticsTest(unittest.TestCase):
                     renderer.render(painter,qt.QRectF(0,0,native.width(),native.height()))
                     painter.end()
                     # Exclude only the outer graph clip boundary, not cell edges.
-                    delta=np.abs(pixels_on_white(native).astype(int)-
-                                 pixels_on_white(actual).astype(int))[41:259,41:259,:3]
+                    def rgba(image):
+                        image=image.convertToFormat(qt.QImage.Format.Format_RGBA8888)
+                        return np.frombuffer(image.bits().asstring(image.sizeInBytes()),
+                                             dtype=np.uint8).reshape(
+                                                 image.height(),image.width(),4).astype(int)
+                    # Compare alpha as well: white-only compositing concealed
+                    # the old RGB32 mask bug's accidental background knockout.
+                    delta=np.abs(rgba(native)-rgba(actual))[41:259,41:259]
                     if svg_images(svg):
                         self.assertLessEqual(int(delta.max()),2)
                     else:
@@ -88,9 +95,8 @@ class HeatmapDataSemanticsTest(unittest.TestCase):
                     task.finish()
                     self.assertEqual(convert.call_count,1)
 
-    @unittest.expectedFailure
-    def test_existing_opaque_colormap_transparency_mask(self):
-        """Known pre-existing native bug: forcetrans is ignored for RGB32."""
+    def test_opaque_colormap_transparency_mask(self):
+        """Transparency data must retain a real alpha-capable image format."""
         cmap=np.array([[0,0,0,255],[255,255,255,255]],dtype=np.intc)
         image=utils.applyColorMap(cmap,'linear',np.ones((2,2)),0,1,0,
                                  transimg=np.zeros((2,2)))

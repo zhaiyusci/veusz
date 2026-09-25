@@ -337,8 +337,9 @@ QImage numpyToQImage(const Numpy2DObj& imgdata, const Numpy2DIntObj &colors,
   // make image
   QImage img(xw, yw, QImage::Format_ARGB32);
 
-  // does the image use alpha values?
-  bool hasalpha = false;
+  // Keep the alpha format if the caller will apply transparency data later,
+  // even when all the initial colour-map pixels are opaque.
+  bool hasalpha = forcetrans;
 
   // iterate over input pixels
   for(int y=0; y<yw; ++y)
