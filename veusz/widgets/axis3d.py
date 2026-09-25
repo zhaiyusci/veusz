@@ -580,7 +580,11 @@ class Axis3D(widget.Widget):
                 utils.formatNumber(v*scale, fmt, locale=self.document.locale)
                 for v in tickvals ]
         else:
-            return
+            # Tick labels and the axis title have independent visibility.
+            ticklabels = []
+            tickfracs = []
+            if axislabelprop.hide or not axislabel:
+                return
 
         # disable drawing of label
         if axislabelprop.hide:

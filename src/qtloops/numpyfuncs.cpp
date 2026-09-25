@@ -94,6 +94,8 @@ void rollingAverage(const Numpy1DObj& indata,
     {
       double ct = 0.;
       double sum = 0.;
+      int exactct = 0;
+      double exactsum = 0.;
 
       // iterate over rolling width
       for(int di = -width; di <= width; ++di)
@@ -105,7 +107,15 @@ void rollingAverage(const Numpy1DObj& indata,
 		{
 		  // weighted average
 		  const double w = (*weights)(ri);
-		  if( isFinite(w) )
+		  if( w == std::numeric_limits<double>::infinity() )
+		    {
+		      // Infinite inverse variance denotes an exact observation.
+		      // Multiple exact observations have equal weight: the
+		      // limit of equal errors tending to zero.
+		      ++exactct;
+		      exactsum += indata(ri);
+		    }
+		  else if( isFinite(w) )
 		    {
 		      ct += w;
 		      sum += w*indata(ri);
@@ -120,7 +130,9 @@ void rollingAverage(const Numpy1DObj& indata,
 	    }
 	}
 
-      if( ct != 0. )
+      if( exactct != 0 )
+	out[i] = exactsum / exactct;
+      else if( ct != 0. )
 	out[i] = sum / ct;
       else
 	out[i] = std::numeric_limits<double>::quiet_NaN();

@@ -147,7 +147,9 @@ class ExportBitmapRunnable(ExportRunnable):
         if fmt != 'png':
             writer.setQuality(self.aexport.quality)
 
-        writer.write(image)
+        if not writer.write(image):
+            raise OSError(_("Could not write '%s': %s") % (
+                self.filename, writer.errorString()))
 
 class ExportPDFRunnable(ExportRunnable):
     """Runnable task to export a PDF file."""
@@ -175,12 +177,20 @@ class ExportPDFRunnable(ExportRunnable):
         updateSize(self.phelpers[0])
 
         painter = qt.QPainter(printer)
-        for i, phelper in enumerate(self.phelpers):
-            if i>0:
-                updateSize(phelper)
-                printer.newPage()
-            phelper.renderToPainter(painter)
-        painter.end()
+        if not painter.isActive():
+            raise OSError(_("Could not open '%s' for PDF output") % self.filename)
+        try:
+            for i, phelper in enumerate(self.phelpers):
+                if i>0:
+                    updateSize(phelper)
+                    if not printer.newPage():
+                        raise OSError(_("Could not add a page to '%s'") %
+                                      self.filename)
+                phelper.renderToPainter(painter)
+        finally:
+            finished = painter.end()
+        if not finished or printer.printerState() == qt.QPrinter.PrinterState.Error:
+            raise OSError(_("Could not finish writing '%s'") % self.filename)
 
 class ExportPostscriptRunnable(ExportRunnable):
     """Task to export .ps/.eps files."""
@@ -254,7 +264,9 @@ class ExportPostscriptRunnable(ExportRunnable):
             self.filename, random.randint(0,1000000), ext)
 
         pdfrunnable = ExportPDFRunnable(self.aexport, tmpfilepdf, self.phelpers)
-        pdfrunnable.run()
+        # Propagate a failed PDF export before invoking Ghostscript. run()
+        # would store the error on AsyncExport and continue with a bad input.
+        pdfrunnable.doExport()
 
         # run ghostscript to covert from pdf to postscript
         cmd = [
@@ -313,7 +325,8 @@ class ExportPICRunnable(ExportRunnable):
     def doExport(self):
         paintdev = qt.QPicture()
         self.renderPage(paintdev, self.phelpers[0])
-        paintdev.save(self.filename)
+        if not paintdev.save(self.filename):
+            raise OSError(_("Could not write '%s'") % self.filename)
 
 class ExportEMFRunnable(ExportRunnable):
     """Runnable task to export EMF output."""

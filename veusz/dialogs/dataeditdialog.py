@@ -395,7 +395,7 @@ class DatasetTableModel2D(qt.QAbstractTableModel):
         """Return headers at top."""
 
         ds = self.document.data.get(self.dsname)
-        if ds.dimensions != 2:
+        if ds is None or ds.dimensions != 2:
             return None
 
         xaxis = orientation == qt.Qt.Orientation.Horizontal
@@ -609,6 +609,10 @@ class DataEditDialog(VeuszDialog):
     def slotDatasetsSelected(self, names):
         """Called when a new dataset is selected."""
 
+        names = [name for name in names if name in self.document.data]
+        self._selection = tuple(
+            (name, self.document.data[name].dimensions) for name in names)
+
         # FIXME: Make readonly models readonly!!
         model = None
         if len(names) == 1:
@@ -629,7 +633,13 @@ class DataEditDialog(VeuszDialog):
         for a in self.datatableview.actions():
             a.setEnabled(model is not None)
 
+        oldmodel = self.datatableview.model()
         self.datatableview.setModel(model)
+        if oldmodel is not None:
+            # QAbstractItemView does not own its model. Stop obsolete models
+            # observing a name which may now refer to a different dataset type.
+            self.document.signalModified.disconnect(oldmodel.slotDocumentModified)
+            oldmodel.deleteLater()
         self.setUnlinkState()
 
     def setUnlinkState(self):
@@ -654,8 +664,15 @@ class DataEditDialog(VeuszDialog):
         self.duplicatebutton.setEnabled(bool(names))
 
     def slotDocumentModified(self):
-        """Set unlink status when document modified."""
-        self.setUnlinkState()
+        """Update the model if a selected dataset changed dimensionality."""
+        names = self.dsbrowser.navtree.getSelectedDatasets()
+        selection = tuple(
+            (name, self.document.data[name].dimensions)
+            for name in names if name in self.document.data)
+        if selection != self._selection:
+            self.slotDatasetsSelected(names)
+        else:
+            self.setUnlinkState()
 
     def selectDataset(self, dsname):
         """Select dataset with name given."""

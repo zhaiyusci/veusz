@@ -50,6 +50,8 @@ import uuid
 import functools
 import types
 import pickle
+import threading
+import select
 
 # check remote process has this API version
 API_VERSION = 2
@@ -72,6 +74,9 @@ class Embedded:
     """
 
     remote = None
+    # All windows share one stream, without request IDs. Protect the entire
+    # request/reply exchange, not just individual reads or writes.
+    _command_lock = threading.RLock()
 
     def __init__(self, name='Veusz', copyof=None, hidden=False, compatlevel=0, debug=False):
         """Initialse the embedded veusz window.
@@ -83,8 +88,9 @@ class Embedded:
         debug prints debugging messages from remote process if set
         """
 
-        if not Embedded.remote:
-            Embedded.startRemote(debug)
+        with Embedded._command_lock:
+            if not Embedded.remote:
+                Embedded.startRemote(debug)
 
         if not copyof:
             retval = self.sendCommand(
@@ -147,17 +153,14 @@ class Embedded:
         Returns string to send to remote process
         """
 
-        if ( hasattr(socket, 'AF_UNIX') and hasattr(socket, 'socketpair') ):
+        if (sys.platform != 'win32' and hasattr(socket, 'AF_UNIX') and
+                hasattr(socket, 'socketpair')):
             # convenient interface
             cls.sockfamily = socket.AF_UNIX
             sock, socket2 = socket.socketpair(cls.sockfamily, socket.SOCK_STREAM)
 
-            # socket is closed on popen in Python 3.4+ without this (PEP 446)
-            try:
-                os.set_inheritable(socket2.fileno(), True)
-            except AttributeError:
-                pass
-
+            # Popen's pass_fds transfers only this descriptor to the child;
+            # keep it non-inheritable in this process.
             sendtext = 'unix %i\n' % socket2.fileno()
             cls.socket2 = socket2    # prevent socket being destroyed
             waitaccept = False
@@ -188,10 +191,12 @@ class Embedded:
             # windows is a special case
             # we need to run embed_remote.py under pythonw.exe, not python.exe
 
-            # look for the python windows interpreter on path
-            findpython = findOnPath('pythonw.exe')
+            # Prefer this interpreter's environment (including venv/Scripts),
+            # rather than an unrelated Python installation on PATH.
+            findpython = os.path.join(os.path.dirname(sys.executable), 'pythonw.exe')
+            if not os.path.isfile(findpython):
+                findpython = findOnPath('pythonw.exe')
             if not findpython:
-                # if it wasn't on the path, use sys.prefix instead
                 findpython = os.path.join(sys.prefix, 'pythonw.exe')
 
             # look for veusz executable on path
@@ -243,10 +248,15 @@ class Embedded:
                 try:
                     # we don't use stdout below, but works around windows bug
                     # http://bugs.python.org/issue1124861
+                    inheritance = {'close_fds': sys.platform != 'win32'}
+                    if sys.platform != 'win32':
+                        childsocket = getattr(cls, 'socket2', None)
+                        inheritance['pass_fds'] = (
+                            (childsocket.fileno(),) if childsocket is not None else ())
                     cls.remote = subprocess.Popen(
                         cmd + ['--embed-remote'],
                         shell=False, bufsize=0,
-                        close_fds=False,
+                        **inheritance,
                         stdin=subprocess.PIPE,
                         stdout=subprocess.DEVNULL,
                         stderr=None if debug else subprocess.DEVNULL,
@@ -260,45 +270,98 @@ class Embedded:
     @classmethod
     def startRemote(cls, debug):
         """Start remote process."""
-        cls.serv_socket, sendtext, waitaccept = cls.makeSockets()
+        cls.serv_socket = cls.socket2 = cls.remote = None
+        try:
+            cls.serv_socket, sendtext, waitaccept = cls.makeSockets()
+            cls.makeRemoteProcess(debug)
+            if not waitaccept:
+                # Only the child should retain this end: otherwise its death
+                # does not produce EOF on our socket.
+                cls.socket2.close()
+                cls.socket2 = None
+            stdin = cls.remote.stdin
 
-        cls.makeRemoteProcess(debug)
-        stdin = cls.remote.stdin
+            # send socket number over pipe
+            stdin.write(sendtext)
 
-        # send socket number over pipe
-        stdin.write( sendtext )
+            if waitaccept:
+                listener = cls.serv_socket
+                try:
+                    # A failed child will never connect. Poll only its known
+                    # lifetime; there is deliberately no startup time limit.
+                    while True:
+                        returncode = cls.remote.poll()
+                        if returncode is not None:
+                            raise RuntimeError(
+                                'Remote Veusz exited before connecting (status %s)' %
+                                returncode)
+                        if select.select([listener], [], [], 0.1)[0]:
+                            cls.serv_socket, address = listener.accept()
+                            break
+                finally:
+                    listener.close()
 
-        # accept connection if necessary
-        if waitaccept:
-            cls.serv_socket, address = cls.serv_socket.accept()
+            # Authenticate the peer before receiving any pickle data.
+            secret = (str(uuid.uuid4()) + '\n').encode('ascii')
+            stdin.write(secret)
+            stdin.close()
+            secretback = cls.readLenFromSocket(cls.serv_socket, len(secret))
+            if secret != secretback:
+                raise RuntimeError("Security between client and server broken")
 
-        # Send a secret to the remote program by secure route and
-        # check it comes back.  This is to check that no program has
-        # secretly connected on our port, which isn't really useful
-        # for AF_UNIX sockets.
-        secret = (str(uuid.uuid4()) + '\n').encode('ascii')
-        stdin.write(secret)
-        secretback = cls.readLenFromSocket(cls.serv_socket, len(secret))
-        if secret != secretback:
-            raise RuntimeError("Security between client and server broken")
-
-        # packet length for command bytes
-        cls.cmdlen = struct.calcsize('<I')
-        atexit.register(cls.exitQt)
+            cls.cmdlen = struct.calcsize('<I')
+            atexit.register(cls.exitQt)
+        except BaseException:
+            # Startup has no atexit handler yet. Do not leave a failed process
+            # or socket behind, or poison the next Embedded construction.
+            sockets, remote = (cls.serv_socket, cls.socket2), cls.remote
+            cls.serv_socket = cls.socket2 = cls.remote = None
+            for sock in sockets:
+                if sock is not None:
+                    try:
+                        sock.close()
+                    except OSError:
+                        pass  # Preserve the startup error during cleanup.
+            if remote is not None:
+                if remote.stdin is not None:
+                    try:
+                        remote.stdin.close()
+                    except OSError:
+                        pass  # The child may already have closed its pipe.
+                try:
+                    if remote.poll() is None:
+                        remote.kill()
+                    remote.wait()
+                except OSError:
+                    # Preserve the original startup failure. In particular,
+                    # never wait on a live child when kill() itself failed.
+                    pass
+            raise
 
     @staticmethod
     def readLenFromSocket(socket, length):
         """Read length bytes from socket."""
-        s = b''
-        while len(s) < length:
-            s += socket.recv(length-len(s))
-        return s
+        chunks = []
+        remaining = length
+        while remaining:
+            chunk = socket.recv(remaining)
+            if not chunk:
+                raise ConnectionError(
+                    'Embedded peer closed connection with %i bytes left to read' %
+                    remaining)
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        return b''.join(chunks)
 
     @staticmethod
     def writeToSocket(socket, data):
         count = 0
+        data = memoryview(data)
         while count < len(data):
-            count += socket.send(data[count:])
+            written = socket.send(data[count:])
+            if not written:
+                raise ConnectionError('Embedded peer closed connection during write')
+            count += written
 
     @classmethod
     def sendCommand(cls, cmd):
@@ -307,13 +370,14 @@ class Embedded:
         # note: protocol 2 for python2 compat
         outs = pickle.dumps(cmd, 2)
 
-        cls.writeToSocket( cls.serv_socket, struct.pack('<I', len(outs)) )
-        cls.writeToSocket( cls.serv_socket, outs )
+        with cls._command_lock:
+            cls.writeToSocket( cls.serv_socket, struct.pack('<I', len(outs)) )
+            cls.writeToSocket( cls.serv_socket, outs )
 
-        backlen = struct.unpack('<I', cls.readLenFromSocket(
-            cls.serv_socket, cls.cmdlen))[0]
-        rets = cls.readLenFromSocket( cls.serv_socket, backlen )
-        retobj = pickle.loads(rets)
+            backlen = struct.unpack('<I', cls.readLenFromSocket(
+                cls.serv_socket, cls.cmdlen))[0]
+            rets = cls.readLenFromSocket( cls.serv_socket, backlen )
+            retobj = pickle.loads(rets)
 
         if isinstance(retobj, Exception):
             raise retobj
@@ -328,13 +392,23 @@ class Embedded:
     @classmethod
     def exitQt(cls):
         """Exit the Qt thread."""
-        try:
-            cls.sendCommand( (-1, '_Quit', (), {}) )
-            cls.serv_socket.shutdown(socket.SHUT_RDWR)
-            cls.serv_socket.close()
-        except socket.error:
-            pass
-        cls.serv_socket, cls.from_pipe = -1, -1
+        with cls._command_lock:
+            sock = getattr(cls, 'serv_socket', None)
+            if sock is None:
+                return
+            try:
+                cls.sendCommand( (-1, '_Quit', (), {}) )
+            except socket.error:
+                # The remote may already have exited. Cleanup must still run.
+                pass
+            finally:
+                try:
+                    sock.shutdown(socket.SHUT_RDWR)
+                except socket.error:
+                    pass
+                sock.close()
+                cls.serv_socket = None
+                cls.remote = None
 
 ############################################################################
 # Tree-based interface to Veusz widget tree below

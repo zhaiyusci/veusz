@@ -191,17 +191,28 @@ class EmbedApplication(qt.QApplication):
     @staticmethod
     def readLenFromSocket(thesocket, length):
         """Read length bytes from socket."""
-        s = b''
-        while len(s) < length:
-            s += thesocket.recv(length-len(s))
-        return s
+        chunks = []
+        remaining = length
+        while remaining:
+            chunk = thesocket.recv(remaining)
+            if not chunk:
+                raise ConnectionError(
+                    'Embedded peer closed connection with %i bytes left to read' %
+                    remaining)
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        return b''.join(chunks)
 
     @staticmethod
     def writeToSocket(thesocket, data):
         """Write to socket until all data written."""
         count = 0
+        data = memoryview(data)
         while count < len(data):
-            count += thesocket.send(data[count:])
+            written = thesocket.send(data[count:])
+            if not written:
+                raise ConnectionError('Embedded peer closed connection during write')
+            count += written
 
     @staticmethod
     def readCommand(thesocket):
@@ -241,6 +252,7 @@ class EmbedApplication(qt.QApplication):
             self.socket.shutdown(socket.SHUT_RDWR)
         except socket.error:
             pass
+        self.socket.close()
         self.closeAllWindows()
         self.quit()
 
@@ -300,12 +312,11 @@ def runremote():
     params = sys.stdin.readline().split()
 
     if params[0] == 'unix':
-        # talk to existing unix domain socket
-        listensocket = socket.fromfd(
-            int(params[1]),
-            socket.AF_UNIX,
-            socket.SOCK_STREAM
-        )
+        # Take ownership, rather than duplicating and leaking the inherited
+        # descriptor with fromfd(). Do not pass it on to further subprocesses.
+        listensocket = socket.socket(
+            socket.AF_UNIX, socket.SOCK_STREAM, fileno=int(params[1]))
+        listensocket.set_inheritable(False)
 
     elif params[0] == 'internet':
         # talk to internet port

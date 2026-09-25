@@ -22,6 +22,7 @@
 
 import sys
 import copy
+import os.path
 
 from .. import utils
 
@@ -143,7 +144,17 @@ class LinkedFileBase:
         If relpath is a string, write relative to path given
         """
         if relpath:
-            f = utils.relpath(self.params.filename, relpath)
+            if sys.platform == 'win32':
+                # Windows paths are case-insensitive, including drive letters.
+                # Comparing their components literally can create spurious '..'
+                # paths when saving to another spelling of the same directory.
+                try:
+                    f = os.path.relpath(self.filename, relpath)
+                except ValueError:
+                    # Different drives or UNC shares cannot be made relative.
+                    f = os.path.abspath(self.filename)
+            else:
+                f = utils.relpath(self.filename, relpath)
         else:
             f = self.filename
         # Here we convert backslashes in Windows to forward slashes

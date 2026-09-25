@@ -1647,10 +1647,14 @@ class MovingAveragePlugin(_OneOutputDatasetPlugin):
         ds_in = helper.getDataset(fields['ds_in'])
         weights = None
         if fields['weighterrors']:
-            if ds_in.serr is not None:
-                weights = 1. / ds_in.serr**2
-            elif ds_in.perr is not None and ds_in.nerr is not None:
-                weights = 1. / ( (ds_in.perr**2+ds_in.nerr**2)/2. )
+            # Zero errors intentionally give infinite weights. rollingAverage
+            # uses only these exact observations if present in a window,
+            # averaging them equally when there is more than one.
+            with N.errstate(divide='ignore'):
+                if ds_in.serr is not None:
+                    weights = 1. / ds_in.serr**2
+                elif ds_in.perr is not None and ds_in.nerr is not None:
+                    weights = 1. / ( (ds_in.perr**2+ds_in.nerr**2)/2. )
         width = fields['width']
         data = qtloops.rollingAverage(ds_in.data, weights, width)
         self.dsout.update(data=data)
